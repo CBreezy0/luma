@@ -1,16 +1,36 @@
-# luma
+# Luma
 
-A new Flutter project.
+Luma is a minimalist photo editing app built with Flutter for iOS.
+It focuses on fast, high-quality presets and simple manual edits with an affordable Pro subscription.
+
+## Features (MVP)
+- Gallery view of device photos
+- Photo editor with basic adjustments
+- Presets (Free + Pro)
+- Before / After preview
+- Export to camera roll
+- Pro subscription paywall
+
+## Tech Stack
+- Flutter
+- go_router (navigation)
+- photo_manager (iOS photo library access)
+- Riverpod (state management)
+- in_app_purchase (App Store subscriptions)
+
+## Platforms
+- iOS only (current)
+- Android planned later
+- Web is not supported (native photo access required)
 
 ## Getting Started
 
-This project is a starting point for a Flutter application.
+### Requirements
+- macOS
+- Xcode
+- Flutter SDK
+- iPhone or iOS Simulator
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+### Install dependencies
+```bash
+flutter pub get
