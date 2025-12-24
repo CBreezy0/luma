@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+
 import 'features/gallery/gallery_page.dart';
 import 'features/editor/editor_page.dart';
 
@@ -23,7 +24,9 @@ class LumaApp extends StatelessWidget {
           builder: (context, state) {
             final assetId = state.uri.queryParameters['assetId'];
             if (assetId == null) {
-              return const Scaffold(body: Center(child: Text('Missing assetId')));
+              return const Scaffold(
+                body: Center(child: Text('Missing assetId')),
+              );
             }
             return EditorPage(assetId: assetId);
           },
@@ -35,6 +38,31 @@ class LumaApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Luma',
       routerConfig: router,
+
+      // Follow the device setting
+      themeMode: ThemeMode.system,
+
+      // Light theme
+      theme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: Colors.white,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.black,
+          brightness: Brightness.light,
+        ),
+      ),
+
+      // Dark theme
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: Colors.black,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.white,
+          brightness: Brightness.dark,
+        ),
+      ),
     );
   }
 }

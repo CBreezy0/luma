@@ -91,7 +91,7 @@ class _GalleryPageState extends State<GalleryPage> {
                             final asset = _assets[index];
                             return _ThumbTile(
                               asset: asset,
-                              onTap: () => context.go('/editor?assetId=${asset.id}'),
+                              onTap: () => context.push('/editor?assetId=${asset.id}'),
                             );
                           },
                         ),
