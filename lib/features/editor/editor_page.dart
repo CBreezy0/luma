@@ -1,35 +1,25 @@
 // lib/features/editor/editor_page.dart
 //
-// Luma EditorPage (fast build, iOS, photo_manager 3.x, image 4.x)
+// Upgraded UI version:
+// - Glass/blur bottom panel
+// - Single accent color
+// - Preset tiles show thumbnail + selected state + subtle animation
+// - Haptics on apply
 //
-// Performance plan:
-// - UI stays smooth: all decode + edit + JPG encode runs in an isolate.
-// - Slider drag triggers LOW-res render (fast).
-// - Slider release triggers HIGH-res render (crisp).
-// - Requests are coalesced: if you drag fast, older renders are discarded.
-// - Small throttle so we do not queue a render every single touch event.
-//
-// Features:
-// - Working tools (Light, Color, Effects, Detail, Optics)
-// - Auto
-// - Undo/Redo (values)
-// - Double tap slider to reset
-// - Save exports baked image to Photos
-// - In-memory presets
-//
-// Notes:
-// - This is a stable base. Crop/Masking/ToneCurve/HSL-per-channel will add extra CPU.
-//   We should add those after this version stays smooth.
+// Keeps your existing render pipeline + tools behavior.
 
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
+import 'dart:ui' show ImageFilter;
 
-import 'package:flutter/foundation.dart'; // compute()
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image/image.dart' as img;
 import 'package:photo_manager/photo_manager.dart';
+
+import '../presets/preset_registry.dart' show LumaPreset, PresetRegistry;
 
 class EditorPage extends StatefulWidget {
   final String assetId;
@@ -46,38 +36,28 @@ class EditorPage extends StatefulWidget {
 enum _PreviewQuality { low, high }
 
 class _EditorPageState extends State<EditorPage> {
-  // ------------------------------------------------------------
-  // Image state
-  // ------------------------------------------------------------
-  Uint8List? _originalBytes; // never changes
-  Uint8List? _previewBytes; // edited preview jpg
+  // Brand accent (subtle, consistent)
+  static const Color _accent = Color(0xFFB25B73);
+
+  Uint8List? _originalBytes;
+  Uint8List? _previewBytes;
   double _imageAspect = 4 / 5;
   bool _loading = true;
 
-  // ------------------------------------------------------------
-  // Render scheduling
-  // ------------------------------------------------------------
   bool _buildingPreview = false;
-  Timer? _throttle; // keeps drag updates from spamming compute()
+  Timer? _throttle;
   _PreviewQuality? _pendingQuality;
-  int _renderToken = 0; // increments per request, discard stale results
+  int _renderToken = 0;
 
-  // ------------------------------------------------------------
-  // UI state
-  // ------------------------------------------------------------
   int _tabIndex = 0; // 0 Edit, 1 Presets
   int _groupIndex = 0;
   int _toolIndex = 0;
 
-  // toolId -> value
-  final Map<String, double> _values = {};
+  String? _activePresetName;
 
-  // presets (in-memory for now)
+  final Map<String, double> _values = {};
   final List<_Preset> _presets = [];
 
-  // ------------------------------------------------------------
-  // Undo/Redo (tool values + selection)
-  // ------------------------------------------------------------
   final List<_HistoryState> _undoStack = [];
   final List<_HistoryState> _redoStack = [];
 
@@ -96,6 +76,7 @@ class _EditorPageState extends State<EditorPage> {
       groupIndex: _groupIndex,
       toolIndex: _toolIndex,
       imageAspect: _imageAspect,
+      activePresetName: _activePresetName,
     );
   }
 
@@ -108,8 +89,8 @@ class _EditorPageState extends State<EditorPage> {
       _groupIndex = s.groupIndex;
       _toolIndex = s.toolIndex;
       _imageAspect = s.imageAspect;
+      _activePresetName = s.activePresetName;
     });
-
     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
   }
 
@@ -129,9 +110,6 @@ class _EditorPageState extends State<EditorPage> {
     _restoreState(next);
   }
 
-  // ------------------------------------------------------------
-  // Tool system
-  // ------------------------------------------------------------
   late final List<_ToolGroup> _groups = [
     _ToolGroup(
       label: 'Light',
@@ -175,22 +153,8 @@ class _EditorPageState extends State<EditorPage> {
     _ToolGroup(
       label: 'Optics',
       tools: const [
-        _ToolItem(
-          id: 'lens_correction',
-          label: 'Lens Corr',
-          kind: ToolKind.toggle,
-          min: 0,
-          max: 1,
-          defaultValue: 0,
-        ),
-        _ToolItem(
-          id: 'chromatic_aberration',
-          label: 'Remove CA',
-          kind: ToolKind.toggle,
-          min: 0,
-          max: 1,
-          defaultValue: 0,
-        ),
+        _ToolItem(id: 'lens_correction', label: 'Lens Corr', kind: ToolKind.toggle, min: 0, max: 1, defaultValue: 0),
+        _ToolItem(id: 'chromatic_aberration', label: 'Remove CA', kind: ToolKind.toggle, min: 0, max: 1, defaultValue: 0),
       ],
     ),
   ];
@@ -217,14 +181,29 @@ class _EditorPageState extends State<EditorPage> {
 
   void _resetActiveTool() {
     if (_activeTool.kind != ToolKind.slider) return;
+    HapticFeedback.selectionClick();
     _pushUndoCheckpoint();
-    setState(() => _values[_activeTool.id] = _activeTool.defaultValue);
+    setState(() {
+      _values[_activeTool.id] = _activeTool.defaultValue;
+      _activePresetName = null;
+    });
     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
   }
 
-  // ------------------------------------------------------------
-  // Init / dispose
-  // ------------------------------------------------------------
+  void _applyRegistryPreset(LumaPreset preset) {
+    HapticFeedback.selectionClick();
+    _pushUndoCheckpoint();
+    setState(() {
+      for (final e in preset.values.entries) {
+        _values[e.key] = e.value;
+      }
+      _activePresetName = preset.name;
+      _tabIndex = 0;
+    });
+    _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Applied: ${preset.name}')));
+  }
+
   @override
   void initState() {
     super.initState();
@@ -238,9 +217,6 @@ class _EditorPageState extends State<EditorPage> {
     super.dispose();
   }
 
-  // ------------------------------------------------------------
-  // Load image from Photos
-  // ------------------------------------------------------------
   Future<void> _loadImage() async {
     final asset = await AssetEntity.fromId(widget.assetId);
     if (asset == null) {
@@ -253,9 +229,7 @@ class _EditorPageState extends State<EditorPage> {
     if (!mounted) return;
 
     final decoded = data == null ? null : img.decodeImage(data);
-    final aspect = (decoded == null || decoded.height == 0)
-        ? (4 / 5)
-        : (decoded.width / decoded.height);
+    final aspect = (decoded == null || decoded.height == 0) ? (4 / 5) : (decoded.width / decoded.height);
 
     setState(() {
       _originalBytes = data;
@@ -267,15 +241,10 @@ class _EditorPageState extends State<EditorPage> {
     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
   }
 
-  // ------------------------------------------------------------
-  // Preview scheduling (throttle + coalesce + isolate)
-  // ------------------------------------------------------------
   void _schedulePreviewRebuild(_PreviewQuality quality, {bool immediate = false}) {
-    // If a high quality render is requested, always prioritize it after the drag finishes.
-    // During drag we throttle low quality renders.
     if (quality == _PreviewQuality.low && !immediate) {
-      if (_throttle?.isActive ?? false) return; // skip, keep UI smooth
-      _throttle = Timer(const Duration(milliseconds: 35), () {}); // ~28 fps render cap
+      if (_throttle?.isActive ?? false) return;
+      _throttle = Timer(const Duration(milliseconds: 35), () {});
     }
 
     if (_buildingPreview) {
@@ -284,7 +253,6 @@ class _EditorPageState extends State<EditorPage> {
     }
 
     final delayMs = immediate ? 0 : (quality == _PreviewQuality.low ? 0 : 60);
-
     Future.delayed(Duration(milliseconds: delayMs), () async {
       await _rebuildPreview(quality);
     });
@@ -296,10 +264,9 @@ class _EditorPageState extends State<EditorPage> {
 
     setState(() => _buildingPreview = true);
 
-    // Tokenize requests so stale isolate results are ignored.
     final int token = ++_renderToken;
-
     final maxSide = (quality == _PreviewQuality.low) ? 520 : 1700;
+
     final job = _RenderJob(
       originalBytes: src,
       values: Map<String, double>.from(_values),
@@ -307,14 +274,12 @@ class _EditorPageState extends State<EditorPage> {
       jpgQuality: (quality == _PreviewQuality.low) ? 82 : 92,
     );
 
-    // Heavy work goes off the UI thread.
     final Uint8List? jpg = await compute(_renderInIsolate, job);
 
     if (!mounted) return;
 
-    // If a newer request happened, discard this result.
     if (token != _renderToken) {
-      if (mounted) setState(() => _buildingPreview = false);
+      setState(() => _buildingPreview = false);
       return;
     }
 
@@ -330,10 +295,9 @@ class _EditorPageState extends State<EditorPage> {
     }
   }
 
-  // ------------------------------------------------------------
-  // Auto (updates values, then re-render)
-  // ------------------------------------------------------------
   void _applyAuto() async {
+    HapticFeedback.selectionClick();
+
     final src = _originalBytes;
     if (src == null) return;
 
@@ -376,6 +340,7 @@ class _EditorPageState extends State<EditorPage> {
       _values['vibrance'] = 0.12;
       _values['highlights'] = -0.10;
       _values['shadows'] = 0.12;
+      _activePresetName = null;
     });
 
     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
@@ -399,9 +364,6 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  // ------------------------------------------------------------
-  // Export final baked image to Photos (high res)
-  // ------------------------------------------------------------
   Future<void> _exportToPhotos() async {
     final src = _originalBytes;
     if (src == null) return;
@@ -409,17 +371,14 @@ class _EditorPageState extends State<EditorPage> {
     final perm = await PhotoManager.requestPermissionExtend();
     if (!perm.isAuth && !perm.hasAccess) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Need Photos permission to save')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Need Photos permission to save')));
       return;
     }
 
-    // Bake at full resolution in isolate to keep UI responsive.
     final job = _RenderJob(
       originalBytes: src,
       values: Map<String, double>.from(_values),
-      maxSide: 999999, // do not downscale
+      maxSide: 999999,
       jpgQuality: 95,
       disableDownscale: true,
     );
@@ -436,15 +395,12 @@ class _EditorPageState extends State<EditorPage> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved to Photos')));
   }
 
-  // ------------------------------------------------------------
-  // Presets
-  // ------------------------------------------------------------
   Future<void> _saveAsPresetFlow() async {
     final controller = TextEditingController();
 
     final name = await showDialog<String>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (context) => AlertDialog(
         title: const Text('Save as preset'),
         content: TextField(
           controller: controller,
@@ -467,16 +423,15 @@ class _EditorPageState extends State<EditorPage> {
     if (name == null) return;
 
     _pushUndoCheckpoint();
-    setState(() => _presets.add(_Preset(name: name, values: Map<String, double>.from(_values))));
+    setState(() {
+      _presets.add(_Preset(name: name, values: Map<String, double>.from(_values)));
+      _activePresetName = name;
+    });
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved preset: $name')));
   }
 
-  // ------------------------------------------------------------
-  // Preview frame math: show image inside a fixed 4:5 frame
-  // but preserve real aspect inside it.
-  // ------------------------------------------------------------
   Rect _computeDisplayBox(Size frame, double aspect) {
     final frameAspect = frame.width / frame.height;
     double w;
@@ -495,9 +450,6 @@ class _EditorPageState extends State<EditorPage> {
     return Rect.fromLTWH(left, top, w, h);
   }
 
-  // ------------------------------------------------------------
-  // Build UI
-  // ------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -520,52 +472,55 @@ class _EditorPageState extends State<EditorPage> {
       body: SafeArea(
         child: Column(
           children: [
-            // Top bar
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-              child: Row(
+              child: Column(
                 children: [
-                  GestureDetector(
-                    onTap: () => context.pop(),
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-                      child: Text('Cancel', style: TextStyle(fontSize: 15, color: Color(0xFF777777))),
-                    ),
-                  ),
-                  const Spacer(),
                   Row(
                     children: [
-                      IconButton(
-                        onPressed: _canUndo ? _undo : null,
-                        icon: const Icon(Icons.undo),
-                        color: Colors.black,
-                        disabledColor: const Color(0xFFCCCCCC),
+                      GestureDetector(
+                        onTap: () => context.pop(),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                          child: Text('Cancel', style: TextStyle(fontSize: 15, color: Color(0xFF777777))),
+                        ),
                       ),
-                      IconButton(
-                        onPressed: _canRedo ? _redo : null,
-                        icon: const Icon(Icons.redo),
-                        color: Colors.black,
-                        disabledColor: const Color(0xFFCCCCCC),
+                      const Spacer(),
+                      Row(
+                        children: [
+                          IconButton(
+                            onPressed: _canUndo ? _undo : null,
+                            icon: const Icon(Icons.undo),
+                            color: Colors.black,
+                            disabledColor: Color(0xFFCCCCCC),
+                          ),
+                          IconButton(
+                            onPressed: _canRedo ? _redo : null,
+                            icon: const Icon(Icons.redo),
+                            color: Colors.black,
+                            disabledColor: Color(0xFFCCCCCC),
+                          ),
+                          const SizedBox(width: 6),
+                          const Text('Edit', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                        ],
                       ),
-                      const SizedBox(width: 6),
-                      const Text('Edit', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                      const Spacer(),
+                      GestureDetector(
+                        onTap: _exportToPhotos,
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                          child: Text('Save', style: TextStyle(fontSize: 15, color: Colors.black)),
+                        ),
+                      ),
                     ],
                   ),
-                  const Spacer(),
-                  GestureDetector(
-                    onTap: _exportToPhotos,
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-                      child: Text('Save', style: TextStyle(fontSize: 15, color: Colors.black)),
-                    ),
-                  ),
+                  const Divider(height: 10, color: Color(0x11000000)),
                 ],
               ),
             ),
 
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
 
-            // Preview
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: AspectRatio(
@@ -578,7 +533,7 @@ class _EditorPageState extends State<EditorPage> {
                     final bytesToShow = _previewBytes ?? _originalBytes!;
 
                     return ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(14),
                       child: Stack(
                         children: [
                           Positioned.fromRect(
@@ -599,7 +554,7 @@ class _EditorPageState extends State<EditorPage> {
                               child: Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                 decoration: BoxDecoration(
-                                  color: Colors.black.withOpacity(0.70),
+                                  color: Colors.black.withAlpha((0.72 * 255).round()),
                                   borderRadius: BorderRadius.circular(10),
                                 ),
                                 child: const Text('Updating', style: TextStyle(color: Colors.white, fontSize: 12)),
@@ -615,70 +570,86 @@ class _EditorPageState extends State<EditorPage> {
 
             const SizedBox(height: 12),
 
+            // Glass bottom panel (blur + translucent)
             Expanded(
-              child: Column(
-                children: [
-                  // Edit / Presets
-                  Container(
-                    width: 240,
-                    height: 34,
-                    padding: const EdgeInsets.all(2),
+              child: ClipRect(
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                  child: Container(
                     decoration: BoxDecoration(
-                      color: const Color(0xFFEDEDED),
-                      borderRadius: BorderRadius.circular(10),
+                      color: Colors.white.withAlpha((0.72 * 255).round()),
+                      border: const Border(top: BorderSide(color: Color(0x1A000000))),
                     ),
-                    child: Row(
+                    child: Column(
                       children: [
+                        const SizedBox(height: 10),
+                        _buildEditPresetsToggle(),
+                        const SizedBox(height: 12),
                         Expanded(
-                          child: GestureDetector(
-                            onTap: () => setState(() => _tabIndex = 0),
-                            child: Container(
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: _tabIndex == 0 ? Colors.white : Colors.transparent,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Text(
-                                'Edit',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: _tabIndex == 0 ? FontWeight.w700 : FontWeight.w500,
-                                  color: _tabIndex == 0 ? Colors.black : const Color(0xFF777777),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: GestureDetector(
-                            onTap: () => setState(() => _tabIndex = 1),
-                            child: Container(
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: _tabIndex == 1 ? Colors.white : Colors.transparent,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Text(
-                                'Presets',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: _tabIndex == 1 ? FontWeight.w700 : FontWeight.w500,
-                                  color: _tabIndex == 1 ? Colors.black : const Color(0xFF777777),
-                                ),
-                              ),
-                            ),
-                          ),
+                          child: _tabIndex == 0 ? _buildEditTab(tool, toolValue) : _buildPresetsTab(),
                         ),
                       ],
                     ),
                   ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
-                  const SizedBox(height: 12),
-
-                  Expanded(
-                    child: _tabIndex == 0 ? _buildEditTab(tool, toolValue) : _buildPresetsTab(),
+  Widget _buildEditPresetsToggle() {
+    return Center(
+      child: Container(
+        width: 240,
+        height: 34,
+        padding: const EdgeInsets.all(2),
+        decoration: BoxDecoration(
+          color: const Color(0xFFEDEDED),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() => _tabIndex = 0),
+                child: Container(
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: _tabIndex == 0 ? Colors.white : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                ],
+                  child: Text(
+                    'Edit',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: _tabIndex == 0 ? FontWeight.w700 : FontWeight.w500,
+                      color: _tabIndex == 0 ? Colors.black : const Color(0xFF777777),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() => _tabIndex = 1),
+                child: Container(
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: _tabIndex == 1 ? Colors.white : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    'Presets',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: _tabIndex == 1 ? FontWeight.w700 : FontWeight.w500,
+                      color: _tabIndex == 1 ? Colors.black : const Color(0xFF777777),
+                    ),
+                  ),
+                ),
               ),
             ),
           ],
@@ -691,7 +662,6 @@ class _EditorPageState extends State<EditorPage> {
     return ListView(
       padding: const EdgeInsets.only(bottom: 18),
       children: [
-        // Group selector
         SizedBox(
           height: 24,
           child: ListView.separated(
@@ -714,14 +684,12 @@ class _EditorPageState extends State<EditorPage> {
                 ),
               );
             },
-            separatorBuilder: (_, __) => const SizedBox(width: 16),
+            separatorBuilder: (_, _) => const SizedBox(width: 16),
             itemCount: _groups.length,
           ),
         ),
-
         const SizedBox(height: 10),
 
-        // Tool selector
         SizedBox(
           height: 34,
           child: ListView.separated(
@@ -741,10 +709,12 @@ class _EditorPageState extends State<EditorPage> {
                   }
 
                   if (t.kind == ToolKind.toggle) {
+                    HapticFeedback.selectionClick();
                     _pushUndoCheckpoint();
                     setState(() {
                       final cur = _v(t.id);
                       _values[t.id] = (cur >= 0.5) ? 0.0 : 1.0;
+                      _activePresetName = null;
                     });
                     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
                   }
@@ -752,25 +722,40 @@ class _EditorPageState extends State<EditorPage> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
                   alignment: Alignment.center,
-                  child: Text(
-                    t.label,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                      color: selected ? Colors.black : const Color(0xFF777777),
-                    ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        t.label,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                          color: selected ? Colors.black : const Color(0xFF9A9A9A),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 180),
+                        curve: Curves.easeOut,
+                        height: 2,
+                        width: selected ? 18 : 0,
+                        decoration: BoxDecoration(
+                          color: _accent,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               );
             },
-            separatorBuilder: (_, __) => const SizedBox(width: 14),
+            separatorBuilder: (_, _) => const SizedBox(width: 14),
             itemCount: _activeGroup.tools.length,
           ),
         ),
 
         const SizedBox(height: 12),
 
-        // Tool header
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
@@ -789,7 +774,6 @@ class _EditorPageState extends State<EditorPage> {
 
         const SizedBox(height: 8),
 
-        // Tool control
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: _buildToolControl(tool, toolValue),
@@ -797,12 +781,15 @@ class _EditorPageState extends State<EditorPage> {
 
         const SizedBox(height: 10),
 
-        // Preset save
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              TextButton(onPressed: _saveAsPresetFlow, child: const Text('Save as preset')),
+              TextButton(
+                onPressed: _saveAsPresetFlow,
+                style: TextButton.styleFrom(foregroundColor: _accent),
+                child: const Text('Save as preset'),
+              ),
               const Spacer(),
               Text('Presets: ${_presets.length}', style: const TextStyle(fontSize: 12, color: Color(0xFF777777))),
             ],
@@ -821,7 +808,7 @@ class _EditorPageState extends State<EditorPage> {
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.black,
             foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
           child: const Text('Run Auto'),
         ),
@@ -834,14 +821,18 @@ class _EditorPageState extends State<EditorPage> {
         height: 44,
         child: GestureDetector(
           onTap: () {
+            HapticFeedback.selectionClick();
             _pushUndoCheckpoint();
-            setState(() => _values[tool.id] = isOn ? 0.0 : 1.0);
+            setState(() {
+              _values[tool.id] = isOn ? 0.0 : 1.0;
+              _activePresetName = null;
+            });
             _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
           },
           child: Container(
             decoration: BoxDecoration(
               color: isOn ? Colors.black : const Color(0xFFEDEDED),
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(12),
             ),
             alignment: Alignment.center,
             child: Text(
@@ -853,15 +844,14 @@ class _EditorPageState extends State<EditorPage> {
       );
     }
 
-    // Slider tool
     return GestureDetector(
       onDoubleTap: _resetActiveTool,
       child: SliderTheme(
         data: SliderTheme.of(context).copyWith(
-          activeTrackColor: Colors.black,
+          activeTrackColor: _accent,
           inactiveTrackColor: const Color(0xFFDDDDDD),
-          thumbColor: Colors.black,
-          overlayColor: Colors.black.withOpacity(0.08),
+          thumbColor: _accent,
+          overlayColor: _accent.withAlpha((0.10 * 255).round()),
         ),
         child: Slider(
           value: toolValue,
@@ -869,7 +859,10 @@ class _EditorPageState extends State<EditorPage> {
           max: tool.max,
           onChangeStart: (_) => _pushUndoCheckpoint(),
           onChanged: (v) {
-            setState(() => _values[tool.id] = v);
+            setState(() {
+              _values[tool.id] = v;
+              _activePresetName = null;
+            });
             _schedulePreviewRebuild(_PreviewQuality.low);
           },
           onChangeEnd: (_) => _schedulePreviewRebuild(_PreviewQuality.high, immediate: true),
@@ -879,9 +872,49 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Widget _buildPresetsTab() {
+    final builtIns = PresetRegistry.rankedFor(
+      aspect: _imageAspect,
+      isLowLight: false,
+      isIndoorGuess: false,
+      isPortraitGuess: false,
+    );
+
+    final thumbBytes = _previewBytes ?? _originalBytes!;
+
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 18),
       children: [
+        const Text('Built-in presets', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 112,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: builtIns.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 12),
+            itemBuilder: (context, i) {
+              final p = builtIns[i];
+              return _RegistryPresetTile(
+                preset: p,
+                selected: _activePresetName == p.name,
+                previewBytes: thumbBytes,
+                accent: _accent,
+                onApply: () => _applyRegistryPreset(p),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 18),
+        const Divider(height: 1),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            const Text('Your presets', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+            const Spacer(),
+            Text('Saved: ${_presets.length}', style: const TextStyle(fontSize: 12, color: Color(0xFF777777))),
+          ],
+        ),
+        const SizedBox(height: 10),
         if (_presets.isEmpty)
           const Padding(
             padding: EdgeInsets.only(top: 20),
@@ -895,12 +928,16 @@ class _EditorPageState extends State<EditorPage> {
           ..._presets.map(
             (p) => _PresetCard(
               preset: p,
+              selected: _activePresetName == p.name,
               onApply: () {
+                HapticFeedback.selectionClick();
                 _pushUndoCheckpoint();
                 setState(() {
                   _values
                     ..clear()
                     ..addAll(p.values);
+                  _activePresetName = p.name;
+                  _tabIndex = 0;
                 });
                 _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Applied: ${p.name}')));
@@ -912,9 +949,80 @@ class _EditorPageState extends State<EditorPage> {
   }
 }
 
-// ============================================================
-// Isolate render job + function
-// ============================================================
+class _RegistryPresetTile extends StatelessWidget {
+  final LumaPreset preset;
+  final VoidCallback onApply;
+  final bool selected;
+  final Uint8List previewBytes;
+  final Color accent;
+
+  const _RegistryPresetTile({
+    required this.preset,
+    required this.onApply,
+    required this.selected,
+    required this.previewBytes,
+    required this.accent,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onApply,
+        borderRadius: BorderRadius.circular(16),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          width: 150,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFFF4F0F1) : Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: selected ? accent : const Color(0xFFE6E6E6),
+              width: selected ? 1.5 : 1,
+            ),
+            boxShadow: const [
+              BoxShadow(
+                blurRadius: 14,
+                offset: Offset(0, 6),
+                color: Color(0x14000000),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(
+                  height: 46,
+                  width: double.infinity,
+                  child: Image.memory(previewBytes, fit: BoxFit.cover),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                preset.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                preset.description,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Color(0xFF7A7A7A), height: 1.2),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _RenderJob {
   final Uint8List originalBytes;
@@ -931,6 +1039,11 @@ class _RenderJob {
     this.disableDownscale = false,
   });
 }
+
+// ============================================================
+// Isolate render job + function
+// ============================================================
+
 
 Uint8List? _renderInIsolate(_RenderJob job) {
   final decoded = img.decodeImage(job.originalBytes);
@@ -978,33 +1091,28 @@ Uint8List? _renderInIsolate(_RenderJob job) {
       double g = p.g / 255.0;
       double b = p.b / 255.0;
 
-      // exposure
       r = (r * expMul).clamp(0.0, 1.0);
       g = (g * expMul).clamp(0.0, 1.0);
       b = (b * expMul).clamp(0.0, 1.0);
 
-      // contrast
       r = (((r - 0.5) * c) + 0.5).clamp(0.0, 1.0);
       g = (((g - 0.5) * c) + 0.5).clamp(0.0, 1.0);
       b = (((b - 0.5) * c) + 0.5).clamp(0.0, 1.0);
 
       final lum = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 1.0);
 
-      // shadows
       final shadowMask = (1.0 - lum).clamp(0.0, 1.0);
       final shadowGain = shadows * 0.35 * shadowMask;
       r = (r + shadowGain).clamp(0.0, 1.0);
       g = (g + shadowGain).clamp(0.0, 1.0);
       b = (b + shadowGain).clamp(0.0, 1.0);
 
-      // highlights
       final hiMask = lum.clamp(0.0, 1.0);
       final hiGain = highlights * 0.35 * hiMask;
       r = (r - hiGain).clamp(0.0, 1.0);
       g = (g - hiGain).clamp(0.0, 1.0);
       b = (b - hiGain).clamp(0.0, 1.0);
 
-      // whites
       if (whites != 0) {
         final wAmt = whites * 0.18;
         r = (r + wAmt * r).clamp(0.0, 1.0);
@@ -1012,7 +1120,6 @@ Uint8List? _renderInIsolate(_RenderJob job) {
         b = (b + wAmt * b).clamp(0.0, 1.0);
       }
 
-      // blacks
       if (blacks != 0) {
         final bAmt = blacks * 0.18;
         r = (r - bAmt * (1.0 - r)).clamp(0.0, 1.0);
@@ -1050,24 +1157,20 @@ Uint8List? _renderInIsolate(_RenderJob job) {
       double g = p.g / 255.0;
       double b = p.b / 255.0;
 
-      // warm/cool
       r = (r + warm).clamp(0.0, 1.0);
       b = (b - warm).clamp(0.0, 1.0);
 
-      // tint
       r = (r + tintAmt).clamp(0.0, 1.0);
       b = (b + tintAmt).clamp(0.0, 1.0);
       g = (g - tintAmt).clamp(0.0, 1.0);
 
       final lum = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 1.0);
 
-      // saturation
       final satFactor = 1.0 + (saturation * 0.85);
       r = (lum + (r - lum) * satFactor).clamp(0.0, 1.0);
       g = (lum + (g - lum) * satFactor).clamp(0.0, 1.0);
       b = (lum + (b - lum) * satFactor).clamp(0.0, 1.0);
 
-      // vibrance
       final maxc = math.max(r, math.max(g, b));
       final minc = math.min(r, math.min(g, b));
       final sat = (maxc - minc).clamp(0.0, 1.0);
@@ -1254,7 +1357,6 @@ Uint8List? _renderInIsolate(_RenderJob job) {
   final ca = (v('chromatic_aberration') >= 0.5);
 
   if (lens) {
-    // barrel correction (simple)
     final s = 0.08;
     final w = out.width;
     final h = out.height;
@@ -1283,7 +1385,6 @@ Uint8List? _renderInIsolate(_RenderJob job) {
   }
 
   if (ca) {
-    // reduce chromatic aberration by sampling R/B with small opposite shifts
     final shiftPx = 1;
     final w = out.width;
     final h = out.height;
@@ -1408,32 +1509,43 @@ class _Preset {
 class _PresetCard extends StatelessWidget {
   final _Preset preset;
   final VoidCallback onApply;
+  final bool selected;
 
   const _PresetCard({
-    super.key,
     required this.preset,
     required this.onApply,
+    required this.selected,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF6F6F6),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onApply,
         borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              preset.name,
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        child: Ink(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFFEFEFEF) : const Color(0xFFF6F6F6),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? Colors.black : const Color(0x00000000),
+              width: selected ? 1.2 : 0,
             ),
           ),
-          TextButton(onPressed: onApply, child: const Text('Apply')),
-        ],
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  preset.name,
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+              ),
+              const Icon(Icons.check, size: 18, color: Color(0xFF777777)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1445,6 +1557,7 @@ class _HistoryState {
   final int groupIndex;
   final int toolIndex;
   final double imageAspect;
+  final String? activePresetName;
 
   const _HistoryState({
     required this.values,
@@ -1452,6 +1565,7 @@ class _HistoryState {
     required this.groupIndex,
     required this.toolIndex,
     required this.imageAspect,
+    required this.activePresetName,
   });
 }
 
