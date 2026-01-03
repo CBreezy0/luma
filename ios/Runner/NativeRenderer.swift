@@ -14,6 +14,7 @@ final class NativeRenderer {
   private lazy var ciContext: CIContext = {
     CIContext(options: [
       .useSoftwareRenderer: false,
+      .cacheIntermediates: true,
       .workingColorSpace: sRGB,
       .outputColorSpace: sRGB
     ])
@@ -26,6 +27,10 @@ final class NativeRenderer {
     values: [String: Double],
     maxSide: Int,
     quality: Double,
+    cropAspect: Double? = nil,
+    rotationTurns: Int = 0,
+    straightenDegrees: Double = 0,
+    cropRect: CGRect? = nil,
     completion: @escaping (Result<Data, Error>) -> Void
   ) {
     fetchFullCIImage(assetId: assetId) { result in
@@ -33,7 +38,14 @@ final class NativeRenderer {
       case .failure(let err):
         completion(.failure(err))
       case .success(let input):
-        let filtered = self.applyAdjustments(input: input, values: values)
+        let cropped = self.applyCropAndRotation(
+          image: input,
+          aspect: cropAspect,
+          rotationTurns: rotationTurns,
+          straightenDegrees: straightenDegrees,
+          cropRect: cropRect
+        )
+        let filtered = self.applyAdjustments(input: cropped, values: values)
         let scaled = self.downscale(ciImage: filtered, maxSide: maxSide)
         guard let jpeg = self.encodeJPEG(ciImage: scaled, quality: quality) else {
           completion(.failure(NSError(domain: "NativeRenderer", code: -3, userInfo: [NSLocalizedDescriptionKey: "JPEG encode failed"])))
@@ -48,6 +60,10 @@ final class NativeRenderer {
     assetId: String,
     values: [String: Double],
     quality: Double,
+    cropAspect: Double? = nil,
+    rotationTurns: Int = 0,
+    straightenDegrees: Double = 0,
+    cropRect: CGRect? = nil,
     completion: @escaping (Result<String, Error>) -> Void
   ) {
     fetchFullCIImage(assetId: assetId) { result in
@@ -55,7 +71,14 @@ final class NativeRenderer {
       case .failure(let err):
         completion(.failure(err))
       case .success(let input):
-        let filtered = self.applyAdjustments(input: input, values: values)
+        let cropped = self.applyCropAndRotation(
+          image: input,
+          aspect: cropAspect,
+          rotationTurns: rotationTurns,
+          straightenDegrees: straightenDegrees,
+          cropRect: cropRect
+        )
+        let filtered = self.applyAdjustments(input: cropped, values: values)
         guard let jpeg = self.encodeJPEG(ciImage: filtered, quality: quality) else {
           completion(.failure(NSError(domain: "NativeRenderer", code: -4, userInfo: [NSLocalizedDescriptionKey: "JPEG encode failed"])))
           return
@@ -157,6 +180,95 @@ final class NativeRenderer {
     return f.outputImage
   }
 
+  // MARK: - Crop / Rotate
+
+  private func applyCropAndRotation(
+    image: CIImage,
+    aspect: Double?,
+    rotationTurns: Int,
+    straightenDegrees: Double,
+    cropRect: CGRect?
+  ) -> CIImage {
+    var out = image
+
+    let turns = ((rotationTurns % 4) + 4) % 4
+    if turns != 0 {
+      out = out.oriented(forExifOrientation: exifOrientation(for: turns))
+    }
+
+    let radians = CGFloat(straightenDegrees * Double.pi / 180.0)
+    if abs(radians) > 0.0001 {
+      if let f = CIFilter(name: "CIStraightenFilter") {
+        f.setValue(out, forKey: kCIInputImageKey)
+        f.setValue(radians, forKey: "inputAngle")
+        if let output = f.outputImage {
+          out = output
+        }
+      }
+    }
+
+    if let rect = cropRect {
+      out = cropNormalizedRect(image: out, normalized: rect)
+    } else if let aspect = aspect, aspect > 0.001 {
+      out = centerCrop(image: out, aspect: aspect)
+    }
+
+    return out
+  }
+
+  private func exifOrientation(for turns: Int) -> Int32 {
+    switch turns {
+    case 1: return 6 // 90 CW
+    case 2: return 3 // 180
+    case 3: return 8 // 270 CW
+    default: return 1
+    }
+  }
+
+  private func centerCrop(image: CIImage, aspect: Double) -> CIImage {
+    let extent = image.extent
+    let width = extent.width
+    let height = extent.height
+    guard width > 1, height > 1 else { return image }
+
+    let imageAspect = width / height
+    var targetW: CGFloat
+    var targetH: CGFloat
+
+    if imageAspect > CGFloat(aspect) {
+      targetH = height
+      targetW = targetH * CGFloat(aspect)
+    } else {
+      targetW = width
+      targetH = targetW / CGFloat(aspect)
+    }
+
+    let x = extent.midX - targetW / 2
+    let y = extent.midY - targetH / 2
+    return image.cropped(to: CGRect(x: x, y: y, width: targetW, height: targetH))
+  }
+
+  private func cropNormalizedRect(image: CIImage, normalized: CGRect) -> CIImage {
+    let extent = image.extent
+    let width = extent.width
+    let height = extent.height
+    guard width > 1, height > 1 else { return image }
+
+    let nx = max(0.0, min(1.0, normalized.origin.x))
+    let ny = max(0.0, min(1.0, normalized.origin.y))
+    let nw = max(0.01, min(1.0 - nx, normalized.size.width))
+    let nh = max(0.01, min(1.0 - ny, normalized.size.height))
+    let flippedY = max(0.0, min(1.0 - nh, 1.0 - ny - nh))
+
+    let rect = CGRect(
+      x: extent.minX + CGFloat(nx) * width,
+      y: extent.minY + CGFloat(flippedY) * height,
+      width: CGFloat(nw) * width,
+      height: CGFloat(nh) * height
+    )
+    return image.cropped(to: rect)
+  }
+
   // MARK: - Core Image adjustments
 
   private func applyAdjustments(input: CIImage, values: [String: Double]) -> CIImage {
@@ -188,10 +300,10 @@ final class NativeRenderer {
       ])
     }
 
-    // whites/blacks -> brightness approximation
+    // tone curve: filmic contrast + black/white control
     let whites = v("whites")
     let blacks = v("blacks")
-    let brightness = (whites - blacks) * 0.10
+    out = applyToneCurve(image: out, contrast: contrast, blacks: blacks, whites: whites)
 
     // temperature/tint
     let balance = v("color_balance")
@@ -205,12 +317,12 @@ final class NativeRenderer {
       ])
     }
 
-    // color controls
-    let contrastVal = CGFloat(1.0 + contrast * 0.35)
+    // color controls (keep light; tone curve handles most contrast)
+    let contrastVal = CGFloat(1.0 + contrast * 0.18)
     let saturationVal = CGFloat(1.0 + saturation * 0.85)
-    let brightnessVal = CGFloat(brightness)
+    let brightnessVal = CGFloat(0.0)
 
-    if abs(contrast) > 0.0001 || abs(saturation) > 0.0001 || abs(brightness) > 0.0001 {
+    if abs(contrast) > 0.0001 || abs(saturation) > 0.0001 {
       out = out.applyingFilter("CIColorControls", parameters: [
         kCIInputContrastKey: contrastVal,
         kCIInputSaturationKey: saturationVal,
@@ -225,22 +337,41 @@ final class NativeRenderer {
       ])
     }
 
+    // noise reduction (before sharpening)
+    let noise = v("noise")
+    let colorNoise = v("color_noise")
+    if noise > 0.0001 || colorNoise > 0.0001 {
+      let noiseLevel = CGFloat(0.02 + min(1.0, noise + colorNoise * 0.6) * 0.08)
+      let sharpness = CGFloat(0.4 + (1.0 - min(1.0, noise)) * 0.4)
+      out = out.applyingFilter("CINoiseReduction", parameters: [
+        "inputNoiseLevel": noiseLevel,
+        "inputSharpness": sharpness
+      ])
+
+      if colorNoise > 0.0001 {
+        let sat = CGFloat(1.0 - min(0.25, colorNoise * 0.15))
+        out = out.applyingFilter("CIColorControls", parameters: [
+          kCIInputSaturationKey: sat
+        ])
+      }
+    }
+
     // sharpen/clarity/texture
     let clarity = v("clarity")
     let texture = v("texture")
     let sharpen = v("sharpen")
 
-    let sharpenAmt = CGFloat(max(0.0, sharpen) * 1.2)
+    let sharpenAmt = CGFloat(max(0.0, sharpen) * 0.9)
     if sharpenAmt > 0.0001 {
       out = out.applyingFilter("CISharpenLuminance", parameters: [
         "inputSharpness": sharpenAmt
       ])
     }
 
-    let unsharpAmount = CGFloat(max(0.0, texture) * 1.0 + max(0.0, clarity) * 1.4)
+    let unsharpAmount = CGFloat(max(0.0, texture) * 0.9 + max(0.0, clarity) * 1.2)
     if unsharpAmount > 0.0001 {
       out = out.applyingFilter("CIUnsharpMask", parameters: [
-        "inputRadius": 2.0,
+        "inputRadius": 1.8,
         "inputIntensity": unsharpAmount
       ])
     }
@@ -249,7 +380,8 @@ final class NativeRenderer {
     let dehaze = v("dehaze")
     if abs(dehaze) > 0.0001 {
       out = out.applyingFilter("CIColorControls", parameters: [
-        kCIInputContrastKey: CGFloat(1.0 + dehaze * 0.25)
+        kCIInputContrastKey: CGFloat(1.0 + dehaze * 0.15),
+        kCIInputSaturationKey: CGFloat(1.0 + dehaze * 0.08)
       ])
     }
 
@@ -318,5 +450,39 @@ final class NativeRenderer {
 
   private func clamp01(_ x: Double) -> Double {
     return min(1.0, max(0.0, x))
+  }
+
+  private func applyToneCurve(
+    image: CIImage,
+    contrast: Double,
+    blacks: Double,
+    whites: Double
+  ) -> CIImage {
+    let c = max(-1.0, min(1.0, contrast))
+    let b = max(-1.0, min(1.0, blacks))
+    let w = max(-1.0, min(1.0, whites))
+
+    let blackLift = b > 0 ? b * 0.10 : 0.0
+    let blackCrush = b < 0 ? abs(b) * 0.06 : 0.0
+    let whiteLift = w > 0 ? w * 0.08 : 0.0
+    let whitePull = w < 0 ? abs(w) * 0.12 : 0.0
+
+    let shadowBend = -c * 0.10
+    let highlightBend = c * 0.10
+    let midLift = c * 0.03
+
+    let p0y = max(0.0, blackLift - blackCrush)
+    let p1y = clamp01(0.25 + shadowBend + blackLift * 0.10 - blackCrush * 0.12)
+    let p2y = clamp01(0.50 + midLift)
+    let p3y = clamp01(0.75 + highlightBend + whiteLift * 0.12 - whitePull * 0.18)
+    let p4y = clamp01(1.0 - whitePull * 0.35 + whiteLift * 0.20)
+
+    return image.applyingFilter("CIToneCurve", parameters: [
+      "inputPoint0": CIVector(x: 0.0, y: p0y),
+      "inputPoint1": CIVector(x: 0.25, y: p1y),
+      "inputPoint2": CIVector(x: 0.50, y: p2y),
+      "inputPoint3": CIVector(x: 0.75, y: p3y),
+      "inputPoint4": CIVector(x: 1.0, y: p4y),
+    ])
   }
 }

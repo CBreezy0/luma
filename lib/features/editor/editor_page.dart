@@ -8,7 +8,6 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:go_router/go_router.dart';
 import 'package:image/image.dart' as img;
 import 'package:photo_manager/photo_manager.dart';
 
@@ -27,7 +26,12 @@ class EditorPage extends StatefulWidget {
 enum _PreviewQuality { low, high }
 
 class _EditorPageState extends State<EditorPage> {
-  static const Color _accent = Color(0xFFB25B73);
+  static const Color _accent = Color(0xFFB08A6E);
+  static const Color _ink = Color(0xFFF5F0EA);
+  static const Color _muted = Color(0xFFB0A69A);
+  static const Color _panel = Color(0xFF1C1C1C);
+  static const Color _panelHighlight = Color(0xFF262626);
+  static const Color _canvas = Color(0xFF151515);
 
   Uint8List? _originalBytes;
   Uint8List? _previewBytes;
@@ -46,6 +50,14 @@ class _EditorPageState extends State<EditorPage> {
   int _toolIndex = 0;
 
   String? _activePresetName;
+  double? _cropAspect;
+  int _rotateQuarterTurns = 0;
+  Offset _cropCenter = const Offset(0.5, 0.5);
+  double _cropScale = 1.0;
+  _CropGestureState? _cropGestureState;
+  static const double _minCropScale = 0.25;
+  bool _isFreeformCrop = false;
+  Rect _freeformCropRect = const Rect.fromLTWH(0.1, 0.1, 0.8, 0.8);
 
   final Map<String, double> _values = {};
   final Map<String, double> _defaultValues = {};
@@ -56,6 +68,9 @@ class _EditorPageState extends State<EditorPage> {
 
   final Map<String, Uint8List> _presetPreviewCache = {};
   final Map<String, Future<Uint8List>> _presetPreviewFutures = {};
+  final Map<String, Uint8List> _previewCache = {};
+  final Map<String, Future<Uint8List>> _previewFutures = {};
+  static const int _previewCacheLimit = 12;
 
   bool get _canUndo => _undoStack.isNotEmpty;
   bool get _canRedo => _redoStack.isNotEmpty;
@@ -64,7 +79,7 @@ class _EditorPageState extends State<EditorPage> {
     _ToolGroup(
       label: 'Light',
       tools: const [
-        _ToolItem(id: 'auto', label: 'Auto', kind: ToolKind.action),
+        _ToolItem(id: 'auto', label: 'Balance', kind: ToolKind.action),
         _ToolItem(
           id: 'exposure',
           label: 'Exposure',
@@ -217,10 +232,24 @@ class _EditorPageState extends State<EditorPage> {
         ),
       ],
     ),
+    _ToolGroup(
+      label: 'Crop',
+      tools: const [
+        _ToolItem(id: 'rotate_90', label: 'Rotate 90', kind: ToolKind.action),
+        _ToolItem(
+          id: 'straighten',
+          label: 'Straighten',
+          min: -1,
+          max: 1,
+          defaultValue: 0,
+        ),
+      ],
+    ),
   ];
 
   _ToolGroup get _activeGroup => _groups[_groupIndex];
   _ToolItem get _activeTool => _activeGroup.tools[_toolIndex];
+  double get _straightenDegrees => _v('straighten') * 8.0;
 
   @override
   void initState() {
@@ -257,6 +286,12 @@ class _EditorPageState extends State<EditorPage> {
       groupIndex: _groupIndex,
       toolIndex: _toolIndex,
       imageAspect: _imageAspect,
+      cropAspect: _cropAspect,
+      rotateQuarterTurns: _rotateQuarterTurns,
+      cropCenter: _cropCenter,
+      cropScale: _cropScale,
+      isFreeformCrop: _isFreeformCrop,
+      freeformCropRect: _freeformCropRect,
       activePresetName: _activePresetName,
     );
   }
@@ -270,6 +305,12 @@ class _EditorPageState extends State<EditorPage> {
       _groupIndex = s.groupIndex;
       _toolIndex = s.toolIndex;
       _imageAspect = s.imageAspect;
+      _cropAspect = s.cropAspect;
+      _rotateQuarterTurns = s.rotateQuarterTurns;
+      _cropCenter = s.cropCenter;
+      _cropScale = s.cropScale;
+      _isFreeformCrop = s.isFreeformCrop;
+      _freeformCropRect = s.freeformCropRect;
       _activePresetName = s.activePresetName;
     });
     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
@@ -357,13 +398,58 @@ class _EditorPageState extends State<EditorPage> {
     final maxSide = (quality == _PreviewQuality.low) ? 700 : 1600;
     final q = (quality == _PreviewQuality.low) ? 0.70 : 0.82;
 
+    final useCropRect = _activeGroup.label != 'Crop';
+    final cacheKey = _previewKey(maxSide, q, useCropRect: useCropRect);
+    final cached = _previewCache[cacheKey];
+    if (cached != null) {
+      if (mounted) {
+        setState(() {
+          _previewBytes = cached;
+          _buildingPreview = false;
+          _buildingHQ = false;
+        });
+      }
+      return;
+    }
+
+    final existing = _previewFutures[cacheKey];
+    if (existing != null) {
+      try {
+        final jpg = await existing;
+        if (!mounted) return;
+        if (token != _renderToken) return;
+        setState(() {
+          _previewBytes = jpg;
+          _buildingPreview = false;
+          _buildingHQ = false;
+        });
+      } catch (_) {
+        if (!mounted) return;
+        setState(() {
+          _buildingPreview = false;
+          _buildingHQ = false;
+        });
+      }
+      return;
+    }
+
     try {
-      final jpg = await NativeRenderer.renderPreview(
+      final future = NativeRenderer.renderPreview(
         assetId: widget.assetId,
         values: Map<String, double>.from(_values),
         maxSide: maxSide,
         quality: q,
+        rotationTurns: _rotateQuarterTurns,
+        straightenDegrees: _straightenDegrees,
+        cropRect: useCropRect ? _normalizedCropRect() : null,
       );
+      _previewFutures[cacheKey] = future;
+      final jpg = await future;
+      _previewCache[cacheKey] = jpg;
+      if (_previewCache.length > _previewCacheLimit) {
+        _previewCache.remove(_previewCache.keys.first);
+      }
+      _previewFutures.remove(cacheKey);
 
       if (!mounted) return;
 
@@ -381,6 +467,7 @@ class _EditorPageState extends State<EditorPage> {
         _buildingHQ = false;
       });
     } catch (_) {
+      _previewFutures.remove(cacheKey);
       if (!mounted) return;
       setState(() {
         _buildingPreview = false;
@@ -408,6 +495,35 @@ class _EditorPageState extends State<EditorPage> {
     return b.toString();
   }
 
+  String _previewKey(int maxSide, double quality, {required bool useCropRect}) {
+    final rect = _normalizedCropRect();
+    final b = StringBuffer();
+    b.write(widget.assetId);
+    b.write('|');
+    b.write(_presetSignature(_values));
+    b.write('|r=');
+    b.write(_rotateQuarterTurns);
+    b.write('|s=');
+    b.write((_straightenDegrees * 10).round());
+    b.write('|crop=');
+    b.write(useCropRect ? '1' : '0');
+    if (useCropRect) {
+      b.write('|c=');
+      b.write((rect.left * 1000).round());
+      b.write(',');
+      b.write((rect.top * 1000).round());
+      b.write(',');
+      b.write((rect.width * 1000).round());
+      b.write(',');
+      b.write((rect.height * 1000).round());
+    }
+    b.write('|ms=');
+    b.write(maxSide);
+    b.write('|q=');
+    b.write((quality * 100).round());
+    return b.toString();
+  }
+
   String _presetCacheKey(String presetName, Map<String, double> presetValues) {
     return '${widget.assetId}|$presetName|${_presetSignature(presetValues)}';
   }
@@ -427,12 +543,16 @@ class _EditorPageState extends State<EditorPage> {
     final merged = Map<String, double>.from(_defaultValues)
       ..addAll(presetValues);
 
+    final useCropRect = _activeGroup.label != 'Crop';
     final fut =
         NativeRenderer.renderPreview(
               assetId: widget.assetId,
               values: merged,
               maxSide: 520,
               quality: 0.74,
+              rotationTurns: _rotateQuarterTurns,
+              straightenDegrees: _straightenDegrees,
+              cropRect: useCropRect ? _normalizedCropRect() : null,
             )
             .then((bytes) {
               _presetPreviewCache[key] = bytes;
@@ -449,6 +569,7 @@ class _EditorPageState extends State<EditorPage> {
   double _v(String id) => _values[id] ?? 0.0;
 
   int _displayNumber(_ToolItem t) {
+    if (t.id == 'straighten') return _straightenDegrees.round();
     final v = _v(t.id);
     final centered = (t.min < 0 && t.max > 0);
     if (centered) return (v.clamp(-1.0, 1.0) * 100).round();
@@ -464,6 +585,407 @@ class _EditorPageState extends State<EditorPage> {
       _activePresetName = null;
     });
     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+  }
+
+  void _rotate90() {
+    HapticFeedback.selectionClick();
+    _pushUndoCheckpoint();
+    setState(() {
+      _rotateQuarterTurns = (_rotateQuarterTurns + 1) % 4;
+    });
+    _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+  }
+
+  void _setCropOption(_CropAspectOption option) {
+    HapticFeedback.selectionClick();
+    _pushUndoCheckpoint();
+    final currentRect = _normalizedCropRect();
+    setState(() {
+      if (option.isFreeform) {
+        _isFreeformCrop = true;
+        _cropAspect = null;
+        _freeformCropRect = currentRect;
+      } else {
+        _isFreeformCrop = false;
+        _cropAspect = option.aspect;
+        _applyCropRect(currentRect);
+      }
+    });
+    _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+  }
+
+  double get _currentCropAspect => _cropAspect ?? _imageAspect;
+  double get _croppedAspect {
+    final rect = _normalizedCropRect();
+    if (rect.height <= 0) return _imageAspect;
+    return (rect.width / rect.height) * _imageAspect;
+  }
+
+  Rect _baseCropRect() {
+    if (_isFreeformCrop) {
+      return const Rect.fromLTWH(0, 0, 1, 1);
+    }
+    final aspect = _currentCropAspect;
+    final imageAspect = _imageAspect;
+
+    double baseW;
+    double baseH;
+
+    if (imageAspect > aspect) {
+      baseH = 1.0;
+      baseW = aspect / imageAspect;
+    } else {
+      baseW = 1.0;
+      baseH = imageAspect / aspect;
+    }
+
+    final left = 0.5 - baseW / 2;
+    final top = 0.5 - baseH / 2;
+    return Rect.fromLTWH(left, top, baseW, baseH);
+  }
+
+  Rect _normalizedCropRect() {
+    if (_isFreeformCrop) {
+      return _freeformCropRect;
+    }
+    final base = _baseCropRect();
+    final scale = _cropScale.clamp(_minCropScale, 1.0);
+    final w = base.width * scale;
+    final h = base.height * scale;
+
+    final center = _clampCropCenter(_cropCenter, scale);
+    final left = (center.dx - w / 2).clamp(0.0, 1.0 - w);
+    final top = (center.dy - h / 2).clamp(0.0, 1.0 - h);
+    return Rect.fromLTWH(left, top, w, h);
+  }
+
+  Offset _clampCropCenter(Offset center, double scale) {
+    final base = _baseCropRect();
+    final w = base.width * scale.clamp(_minCropScale, 1.0);
+    final h = base.height * scale.clamp(_minCropScale, 1.0);
+
+    final minX = w / 2;
+    final maxX = 1.0 - w / 2;
+    final minY = h / 2;
+    final maxY = 1.0 - h / 2;
+
+    return Offset(center.dx.clamp(minX, maxX), center.dy.clamp(minY, maxY));
+  }
+
+  void _applyCropRect(Rect rect) {
+    final base = _baseCropRect();
+    final scale = (rect.width / base.width).clamp(_minCropScale, 1.0);
+    final center = Offset(
+      rect.center.dx.clamp(0.0, 1.0),
+      rect.center.dy.clamp(0.0, 1.0),
+    );
+
+    _cropScale = scale;
+    _cropCenter = _clampCropCenter(center, scale);
+  }
+
+  Rect _displayRectForNormalized(Rect normalized, Size displaySize) {
+    return Rect.fromLTWH(
+      normalized.left * displaySize.width,
+      normalized.top * displaySize.height,
+      normalized.width * displaySize.width,
+      normalized.height * displaySize.height,
+    );
+  }
+
+  _CropHandle? _hitTestHandle(Offset point, Rect cropRect) {
+    const handleRadius = 18.0;
+    final handles = {
+      _CropHandle.topLeft: cropRect.topLeft,
+      _CropHandle.topRight: cropRect.topRight,
+      _CropHandle.bottomLeft: cropRect.bottomLeft,
+      _CropHandle.bottomRight: cropRect.bottomRight,
+      _CropHandle.top: cropRect.topCenter,
+      _CropHandle.bottom: cropRect.bottomCenter,
+      _CropHandle.left: cropRect.centerLeft,
+      _CropHandle.right: cropRect.centerRight,
+    };
+
+    for (final entry in handles.entries) {
+      if ((entry.value - point).distance <= handleRadius) {
+        return entry.key;
+      }
+    }
+    return null;
+  }
+
+  Rect _resizeCropRect(Rect start, _CropHandle handle, Offset deltaNorm) {
+    if (_isFreeformCrop) {
+      return _resizeFreeformRect(start, handle, deltaNorm);
+    }
+    final aspect = _currentCropAspect;
+    final base = _baseCropRect();
+    final minW = base.width * _minCropScale;
+    final minH = base.height * _minCropScale;
+    Rect rect;
+
+    switch (handle) {
+      case _CropHandle.left:
+        final anchor = start.centerRight;
+        var width = (anchor.dx - (start.left + deltaNorm.dx)).clamp(minW, 1.0);
+        final height = (width / aspect).clamp(minH, 1.0);
+        rect = Rect.fromCenter(
+          center: Offset(anchor.dx - width / 2, anchor.dy),
+          width: width,
+          height: height,
+        );
+        break;
+      case _CropHandle.right:
+        final anchor = start.centerLeft;
+        var width = ((start.right + deltaNorm.dx) - anchor.dx).clamp(minW, 1.0);
+        final height = (width / aspect).clamp(minH, 1.0);
+        rect = Rect.fromCenter(
+          center: Offset(anchor.dx + width / 2, anchor.dy),
+          width: width,
+          height: height,
+        );
+        break;
+      case _CropHandle.top:
+        final anchor = start.bottomCenter;
+        var height = (anchor.dy - (start.top + deltaNorm.dy)).clamp(minH, 1.0);
+        final width = (height * aspect).clamp(minW, 1.0);
+        rect = Rect.fromCenter(
+          center: Offset(anchor.dx, anchor.dy - height / 2),
+          width: width,
+          height: height,
+        );
+        break;
+      case _CropHandle.bottom:
+        final anchor = start.topCenter;
+        var height = ((start.bottom + deltaNorm.dy) - anchor.dy).clamp(
+          minH,
+          1.0,
+        );
+        final width = (height * aspect).clamp(minW, 1.0);
+        rect = Rect.fromCenter(
+          center: Offset(anchor.dx, anchor.dy + height / 2),
+          width: width,
+          height: height,
+        );
+        break;
+      case _CropHandle.topLeft:
+        final anchor = start.bottomRight;
+        var width = (anchor.dx - (start.left + deltaNorm.dx)).clamp(minW, 1.0);
+        var height = (width / aspect).clamp(minH, 1.0);
+        rect = Rect.fromLTRB(
+          anchor.dx - width,
+          anchor.dy - height,
+          anchor.dx,
+          anchor.dy,
+        );
+        break;
+      case _CropHandle.topRight:
+        final anchor = start.bottomLeft;
+        var width = ((start.right + deltaNorm.dx) - anchor.dx).clamp(minW, 1.0);
+        var height = (width / aspect).clamp(minH, 1.0);
+        rect = Rect.fromLTRB(
+          anchor.dx,
+          anchor.dy - height,
+          anchor.dx + width,
+          anchor.dy,
+        );
+        break;
+      case _CropHandle.bottomLeft:
+        final anchor = start.topRight;
+        var width = (anchor.dx - (start.left + deltaNorm.dx)).clamp(minW, 1.0);
+        var height = (width / aspect).clamp(minH, 1.0);
+        rect = Rect.fromLTRB(
+          anchor.dx - width,
+          anchor.dy,
+          anchor.dx,
+          anchor.dy + height,
+        );
+        break;
+      case _CropHandle.bottomRight:
+        final anchor = start.topLeft;
+        var width = ((start.right + deltaNorm.dx) - anchor.dx).clamp(minW, 1.0);
+        var height = (width / aspect).clamp(minH, 1.0);
+        rect = Rect.fromLTRB(
+          anchor.dx,
+          anchor.dy,
+          anchor.dx + width,
+          anchor.dy + height,
+        );
+        break;
+    }
+
+    rect = Rect.fromLTRB(
+      rect.left.clamp(0.0, 1.0),
+      rect.top.clamp(0.0, 1.0),
+      rect.right.clamp(0.0, 1.0),
+      rect.bottom.clamp(0.0, 1.0),
+    );
+
+    final shiftX = rect.left < 0
+        ? -rect.left
+        : rect.right > 1.0
+        ? 1.0 - rect.right
+        : 0.0;
+    final shiftY = rect.top < 0
+        ? -rect.top
+        : rect.bottom > 1.0
+        ? 1.0 - rect.bottom
+        : 0.0;
+
+    return rect.shift(Offset(shiftX, shiftY));
+  }
+
+  Rect _resizeFreeformRect(Rect start, _CropHandle handle, Offset deltaNorm) {
+    var left = start.left;
+    var right = start.right;
+    var top = start.top;
+    var bottom = start.bottom;
+
+    switch (handle) {
+      case _CropHandle.left:
+        left += deltaNorm.dx;
+        break;
+      case _CropHandle.right:
+        right += deltaNorm.dx;
+        break;
+      case _CropHandle.top:
+        top += deltaNorm.dy;
+        break;
+      case _CropHandle.bottom:
+        bottom += deltaNorm.dy;
+        break;
+      case _CropHandle.topLeft:
+        left += deltaNorm.dx;
+        top += deltaNorm.dy;
+        break;
+      case _CropHandle.topRight:
+        right += deltaNorm.dx;
+        top += deltaNorm.dy;
+        break;
+      case _CropHandle.bottomLeft:
+        left += deltaNorm.dx;
+        bottom += deltaNorm.dy;
+        break;
+      case _CropHandle.bottomRight:
+        right += deltaNorm.dx;
+        bottom += deltaNorm.dy;
+        break;
+    }
+
+    final minSize = 0.08;
+    var rect = Rect.fromLTRB(left, top, right, bottom);
+    if (rect.width < minSize) {
+      final centerX = rect.center.dx;
+      rect = Rect.fromLTRB(
+        centerX - minSize / 2,
+        rect.top,
+        centerX + minSize / 2,
+        rect.bottom,
+      );
+    }
+    if (rect.height < minSize) {
+      final centerY = rect.center.dy;
+      rect = Rect.fromLTRB(
+        rect.left,
+        centerY - minSize / 2,
+        rect.right,
+        centerY + minSize / 2,
+      );
+    }
+
+    rect = Rect.fromLTRB(
+      rect.left.clamp(0.0, 1.0),
+      rect.top.clamp(0.0, 1.0),
+      rect.right.clamp(0.0, 1.0),
+      rect.bottom.clamp(0.0, 1.0),
+    );
+
+    return rect;
+  }
+
+  void _onCropGestureStart(ScaleStartDetails details, Rect displayBox) {
+    _pushUndoCheckpoint();
+    final normalized = _normalizedCropRect();
+    final cropRect = _displayRectForNormalized(normalized, displayBox.size);
+    final handle = _hitTestHandle(details.localFocalPoint, cropRect);
+    final mode = (handle != null)
+        ? _CropDragMode.handle
+        : _CropDragMode.moveScale;
+
+    _cropGestureState = _CropGestureState(
+      center: _cropCenter,
+      scale: _cropScale,
+      focalPoint: details.localFocalPoint,
+      displaySize: displayBox.size,
+      mode: mode,
+      handle: handle,
+      startRect: normalized,
+    );
+  }
+
+  void _onCropGestureUpdate(ScaleUpdateDetails details) {
+    final state = _cropGestureState;
+    if (state == null) return;
+
+    final delta = details.localFocalPoint - state.focalPoint;
+    final dx = delta.dx / state.displaySize.width;
+    final dy = delta.dy / state.displaySize.height;
+
+    if (state.mode == _CropDragMode.handle && state.handle != null) {
+      final nextRect = _resizeCropRect(
+        state.startRect,
+        state.handle!,
+        Offset(dx, dy),
+      );
+      setState(() {
+        if (_isFreeformCrop) {
+          _freeformCropRect = nextRect;
+        } else {
+          _applyCropRect(nextRect);
+        }
+      });
+    } else if (_isFreeformCrop) {
+      final scaled = _scaleRectAroundCenter(
+        state.startRect,
+        details.scale.clamp(0.7, 1.3),
+      );
+      final moved = scaled.shift(Offset(dx, dy));
+      setState(() {
+        _freeformCropRect = _clampRectToBounds(moved);
+      });
+    } else {
+      final nextScale = (state.scale * details.scale).clamp(_minCropScale, 1.0);
+      final nextCenter = _clampCropCenter(
+        Offset(state.center.dx + dx, state.center.dy + dy),
+        nextScale,
+      );
+
+      setState(() {
+        _cropScale = nextScale;
+        _cropCenter = nextCenter;
+      });
+    }
+
+    _dragDebounce?.cancel();
+  }
+
+  void _onCropGestureEnd() {
+    _cropGestureState = null;
+    _dragDebounce?.cancel();
+    _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+  }
+
+  Rect _scaleRectAroundCenter(Rect rect, double scale) {
+    final center = rect.center;
+    final w = (rect.width * scale).clamp(0.08, 1.0);
+    final h = (rect.height * scale).clamp(0.08, 1.0);
+    return Rect.fromCenter(center: center, width: w, height: h);
+  }
+
+  Rect _clampRectToBounds(Rect rect) {
+    final left = rect.left.clamp(0.0, 1.0 - rect.width);
+    final top = rect.top.clamp(0.0, 1.0 - rect.height);
+    return Rect.fromLTWH(left, top, rect.width, rect.height);
   }
 
   void _applyRegistryPreset(LumaPreset preset) {
@@ -566,6 +1088,10 @@ class _EditorPageState extends State<EditorPage> {
         assetId: widget.assetId,
         values: Map<String, double>.from(_values),
         quality: 0.92,
+        cropAspect: _cropAspect,
+        rotationTurns: _rotateQuarterTurns,
+        straightenDegrees: _straightenDegrees,
+        cropRect: _normalizedCropRect(),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -623,211 +1149,266 @@ class _EditorPageState extends State<EditorPage> {
     ).showSnackBar(SnackBar(content: Text('Saved preset: $name')));
   }
 
-  Rect _computeDisplayBox(Size frame, double aspect) {
-    final frameAspect = frame.width / frame.height;
-    double w;
-    double h;
-
-    if (frameAspect > aspect) {
-      h = frame.height;
-      w = h * aspect;
-    } else {
-      w = frame.width;
-      h = w / aspect;
-    }
-
-    final left = (frame.width - w) / 2;
-    final top = (frame.height - h) / 2;
-    return Rect.fromLTWH(left, top, w, h);
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_loading) {
       return const Scaffold(
-        body: SafeArea(child: Center(child: CircularProgressIndicator())),
+        backgroundColor: _canvas,
+        body: SafeArea(
+          child: Center(child: CircularProgressIndicator(color: _accent)),
+        ),
       );
     }
 
     if (_originalBytes == null) {
       return const Scaffold(
-        body: SafeArea(child: Center(child: Text('Could not load image'))),
+        backgroundColor: _canvas,
+        body: SafeArea(
+          child: Center(
+            child: Text(
+              'Could not load image',
+              style: TextStyle(color: _muted),
+            ),
+          ),
+        ),
       );
     }
 
     final tool = _activeTool;
     final toolValue = _v(tool.id);
 
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      GestureDetector(
-                        onTap: () => context.pop(),
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 8,
-                          ),
-                          child: Text(
-                            'Cancel',
-                            style: TextStyle(
-                              fontSize: 15,
-                              color: Color(0xFF777777),
-                            ),
-                          ),
-                        ),
-                      ),
-                      const Spacer(),
-                      Row(
-                        children: [
-                          IconButton(
-                            onPressed: _canUndo ? _undo : null,
-                            icon: const Icon(Icons.undo),
-                            color: Colors.black,
-                            disabledColor: Color(0xFFCCCCCC),
-                          ),
-                          IconButton(
-                            onPressed: _canRedo ? _redo : null,
-                            icon: const Icon(Icons.redo),
-                            color: Colors.black,
-                            disabledColor: Color(0xFFCCCCCC),
-                          ),
-                          const SizedBox(width: 6),
-                          const Text(
-                            'Edit',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const Spacer(),
-                      GestureDetector(
-                        onTap: _exportToPhotos,
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 8,
-                          ),
-                          child: Text(
-                            'Save',
-                            style: TextStyle(fontSize: 15, color: Colors.black),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const Divider(height: 10, color: Color(0x11000000)),
-                ],
-              ),
-            ),
-            const SizedBox(height: 6),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: AspectRatio(
-                aspectRatio: 4 / 5,
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final frameSize = Size(
-                      constraints.maxWidth,
-                      constraints.maxHeight,
-                    );
-                    final displayBox = _computeDisplayBox(
-                      frameSize,
-                      _imageAspect,
-                    );
-
-                    final bytesToShow = _previewBytes ?? _originalBytes!;
-
-                    return ClipRRect(
-                      borderRadius: BorderRadius.circular(14),
-                      child: Stack(
-                        children: [
-                          Positioned.fromRect(
-                            rect: displayBox,
-                            child: ClipRect(
-                              child: Image.memory(
-                                bytesToShow,
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                          ),
-                          Positioned.fill(
-                            child: IgnorePointer(
-                              child: CustomPaint(
-                                painter: _FrameMaskPainter(displayBox),
-                              ),
-                            ),
-                          ),
-                          if (_buildingHQ)
-                            Positioned(
-                              right: 10,
-                              top: 10,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 6,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withAlpha(
-                                    (0.72 * 255).round(),
-                                  ),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: const Text(
-                                  'Updating',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    );
-                  },
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light.copyWith(
+        statusBarColor: _canvas,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+      ),
+      child: Scaffold(
+        backgroundColor: _canvas,
+        body: SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 10,
                 ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: ClipRect(
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white.withAlpha((0.72 * 255).round()),
-                      border: const Border(
-                        top: BorderSide(color: Color(0x1A000000)),
-                      ),
-                    ),
-                    child: Column(
+                child: Column(
+                  children: [
+                    Row(
                       children: [
-                        const SizedBox(height: 10),
-                        _buildEditPresetsToggle(),
-                        const SizedBox(height: 12),
-                        Expanded(
-                          child: _tabIndex == 0
-                              ? _buildEditTab(tool, toolValue)
-                              : _buildPresetsTab(),
+                        GestureDetector(
+                          onTap: () => Navigator.of(context).maybePop(),
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 8,
+                            ),
+                            child: Text(
+                              'Cancel',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: _muted,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                        Row(
+                          children: [
+                            IconButton(
+                              onPressed: _canUndo ? _undo : null,
+                              icon: const Icon(Icons.undo),
+                              color: _ink,
+                              disabledColor: _muted,
+                            ),
+                            IconButton(
+                              onPressed: _canRedo ? _redo : null,
+                              icon: const Icon(Icons.redo),
+                              color: _ink,
+                              disabledColor: _muted,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Edit',
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.2,
+                                color: _ink,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const Spacer(),
+                        GestureDetector(
+                          onTap: _exportToPhotos,
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 8,
+                            ),
+                            child: Text(
+                              'Save',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0.2,
+                                color: _ink,
+                              ),
+                            ),
+                          ),
                         ),
                       ],
                     ),
+                    Divider(height: 10, color: _ink.withAlpha(24)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height * 0.52,
+                    ),
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final isCropGroup = _activeGroup.label == 'Crop';
+                        final previewAspect = isCropGroup
+                            ? _imageAspect
+                            : _croppedAspect;
+                        final maxWidth = constraints.maxWidth;
+                        final maxHeight = constraints.maxHeight.isFinite
+                            ? constraints.maxHeight
+                            : maxWidth / previewAspect;
+                        final width = math.min(
+                          maxWidth,
+                          maxHeight * previewAspect,
+                        );
+                        final height = width / previewAspect;
+                        final displayBox = Offset.zero & Size(width, height);
+
+                        final bytesToShow = _previewBytes ?? _originalBytes!;
+
+                        return Container(
+                          width: width,
+                          height: height,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(16),
+                            boxShadow: const [
+                              BoxShadow(
+                                color: Color(0x0A000000),
+                                blurRadius: 16,
+                                offset: Offset(0, 6),
+                              ),
+                            ],
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(16),
+                            child: Stack(
+                              children: [
+                                Positioned.fromRect(
+                                  rect: displayBox,
+                                  child: ClipRect(
+                                    child: AnimatedSwitcher(
+                                      duration: const Duration(
+                                        milliseconds: 180,
+                                      ),
+                                      switchInCurve: Curves.easeOut,
+                                      switchOutCurve: Curves.easeIn,
+                                      child: Image.memory(
+                                        bytesToShow,
+                                        key: ValueKey(bytesToShow),
+                                        fit: BoxFit.cover,
+                                        gaplessPlayback: true,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                if (isCropGroup)
+                                  Positioned.fromRect(
+                                    rect: displayBox,
+                                    child: GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onScaleStart: (d) =>
+                                          _onCropGestureStart(d, displayBox),
+                                      onScaleUpdate: _onCropGestureUpdate,
+                                      onScaleEnd: (_) => _onCropGestureEnd(),
+                                      child: SizedBox.expand(
+                                        child: CustomPaint(
+                                          painter: _CropOverlayPainter(
+                                            _normalizedCropRect(),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                if (_buildingHQ)
+                                  Positioned(
+                                    right: 10,
+                                    top: 10,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: _panelHighlight.withAlpha(
+                                          (0.9 * 255).round(),
+                                        ),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: const Text(
+                                        'Updating',
+                                        style: TextStyle(
+                                          color: _ink,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
                   ),
                 ),
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              Expanded(
+                child: ClipRect(
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: _panel.withAlpha((0.96 * 255).round()),
+                        border: Border(
+                          top: BorderSide(color: _ink.withAlpha(20)),
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          const SizedBox(height: 10),
+                          _buildEditPresetsToggle(),
+                          const SizedBox(height: 12),
+                          Expanded(
+                            child: _tabIndex == 0
+                                ? _buildEditTab(tool, toolValue)
+                                : _buildPresetsTab(),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -840,8 +1421,9 @@ class _EditorPageState extends State<EditorPage> {
         height: 34,
         padding: const EdgeInsets.all(2),
         decoration: BoxDecoration(
-          color: const Color(0xFFEDEDED),
+          color: _panel,
           borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: _ink.withAlpha(18)),
         ),
         child: Row(
           children: [
@@ -851,8 +1433,13 @@ class _EditorPageState extends State<EditorPage> {
                 child: Container(
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: _tabIndex == 0 ? Colors.white : Colors.transparent,
+                    color: _tabIndex == 0
+                        ? _panelHighlight
+                        : Colors.transparent,
                     borderRadius: BorderRadius.circular(8),
+                    border: _tabIndex == 0
+                        ? Border.all(color: _accent.withAlpha(120))
+                        : null,
                   ),
                   child: Text(
                     'Edit',
@@ -861,9 +1448,7 @@ class _EditorPageState extends State<EditorPage> {
                       fontWeight: _tabIndex == 0
                           ? FontWeight.w700
                           : FontWeight.w500,
-                      color: _tabIndex == 0
-                          ? Colors.black
-                          : const Color(0xFF777777),
+                      color: _tabIndex == 0 ? _ink : _muted,
                     ),
                   ),
                 ),
@@ -875,8 +1460,13 @@ class _EditorPageState extends State<EditorPage> {
                 child: Container(
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: _tabIndex == 1 ? Colors.white : Colors.transparent,
+                    color: _tabIndex == 1
+                        ? _panelHighlight
+                        : Colors.transparent,
                     borderRadius: BorderRadius.circular(8),
+                    border: _tabIndex == 1
+                        ? Border.all(color: _accent.withAlpha(120))
+                        : null,
                   ),
                   child: Text(
                     'Presets',
@@ -885,9 +1475,7 @@ class _EditorPageState extends State<EditorPage> {
                       fontWeight: _tabIndex == 1
                           ? FontWeight.w700
                           : FontWeight.w500,
-                      color: _tabIndex == 1
-                          ? Colors.black
-                          : const Color(0xFF777777),
+                      color: _tabIndex == 1 ? _ink : _muted,
                     ),
                   ),
                 ),
@@ -900,9 +1488,27 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Widget _buildEditTab(_ToolItem tool, double toolValue) {
+    final isCropGroup = _activeGroup.label == 'Crop';
+
     return ListView(
       padding: const EdgeInsets.only(bottom: 18),
       children: [
+        if (isCropGroup) ...[
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _CropAspectSelector(
+              current: _cropAspect,
+              isFreeform: _isFreeformCrop,
+              onSelect: _setCropOption,
+              activeColor: _accent,
+              inactiveColor: _panel,
+              activeTextColor: _ink,
+              inactiveTextColor: _muted,
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
         SizedBox(
           height: 24,
           child: ListView.separated(
@@ -911,16 +1517,23 @@ class _EditorPageState extends State<EditorPage> {
             itemBuilder: (context, i) {
               final selected = i == _groupIndex;
               return GestureDetector(
-                onTap: () => setState(() {
-                  _groupIndex = i;
-                  _toolIndex = 0;
-                }),
+                onTap: () {
+                  setState(() {
+                    _groupIndex = i;
+                    _toolIndex = 0;
+                  });
+                  _schedulePreviewRebuild(
+                    _PreviewQuality.high,
+                    immediate: true,
+                  );
+                },
                 child: Text(
                   _groups[i].label,
                   style: TextStyle(
-                    fontSize: 13,
+                    fontSize: 12,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    color: selected ? Colors.black : const Color(0xFF777777),
+                    letterSpacing: 0.4,
+                    color: selected ? _ink : _muted,
                   ),
                 ),
               );
@@ -945,6 +1558,7 @@ class _EditorPageState extends State<EditorPage> {
 
                   if (t.kind == ToolKind.action) {
                     if (t.id == 'auto') _applyAuto();
+                    if (t.id == 'rotate_90') _rotate90();
                     return;
                   }
 
@@ -971,13 +1585,12 @@ class _EditorPageState extends State<EditorPage> {
                       Text(
                         t.label,
                         style: TextStyle(
-                          fontSize: 12,
+                          fontSize: 11,
                           fontWeight: selected
                               ? FontWeight.w700
                               : FontWeight.w500,
-                          color: selected
-                              ? Colors.black
-                              : const Color(0xFF9A9A9A),
+                          letterSpacing: 0.3,
+                          color: selected ? _ink : _muted,
                         ),
                       ),
                       const SizedBox(height: 4),
@@ -1007,27 +1620,23 @@ class _EditorPageState extends State<EditorPage> {
             children: [
               Text(
                 tool.label,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                  color: _ink,
                 ),
               ),
               const Spacer(),
               if (tool.kind == ToolKind.slider)
                 Text(
                   '${_displayNumber(tool)}',
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: Color(0xFF777777),
-                  ),
+                  style: TextStyle(fontSize: 12, color: _muted),
                 )
               else if (tool.kind == ToolKind.toggle)
                 Text(
                   _v(tool.id) >= 0.5 ? 'On' : 'Off',
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: Color(0xFF777777),
-                  ),
+                  style: TextStyle(fontSize: 12, color: _muted),
                 )
               else
                 const SizedBox.shrink(),
@@ -1047,12 +1656,12 @@ class _EditorPageState extends State<EditorPage> {
               TextButton(
                 onPressed: _saveAsPresetFlow,
                 style: TextButton.styleFrom(foregroundColor: _accent),
-                child: const Text('Save as preset'),
+                child: const Text('Save', style: TextStyle(letterSpacing: 0.3)),
               ),
               const Spacer(),
               Text(
-                'Presets: ${_presets.length}',
-                style: const TextStyle(fontSize: 12, color: Color(0xFF777777)),
+                'Saved: ${_presets.length}',
+                style: TextStyle(fontSize: 11, color: _muted),
               ),
             ],
           ),
@@ -1063,18 +1672,30 @@ class _EditorPageState extends State<EditorPage> {
 
   Widget _buildToolControl(_ToolItem tool, double toolValue) {
     if (tool.kind == ToolKind.action) {
+      final (label, action) = switch (tool.id) {
+        'auto' => ('Balance', _applyAuto),
+        'rotate_90' => ('Rotate 90', _rotate90),
+        _ => ('Run', _applyAuto),
+      };
       return SizedBox(
         height: 44,
-        child: ElevatedButton(
-          onPressed: _applyAuto,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.black,
-            foregroundColor: Colors.white,
+        child: OutlinedButton(
+          onPressed: action,
+          style: OutlinedButton.styleFrom(
+            backgroundColor: _panel,
+            foregroundColor: _ink,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
+            side: BorderSide(color: _ink.withAlpha(24)),
           ),
-          child: const Text('Run Auto'),
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.4,
+            ),
+          ),
         ),
       );
     }
@@ -1095,14 +1716,15 @@ class _EditorPageState extends State<EditorPage> {
           },
           child: Container(
             decoration: BoxDecoration(
-              color: isOn ? Colors.black : const Color(0xFFEDEDED),
+              color: isOn ? _panelHighlight : _panel,
               borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _ink.withAlpha(22)),
             ),
             alignment: Alignment.center,
             child: Text(
               isOn ? 'On' : 'Off',
               style: TextStyle(
-                color: isOn ? Colors.white : Colors.black,
+                color: isOn ? _ink : _muted,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -1116,7 +1738,7 @@ class _EditorPageState extends State<EditorPage> {
       child: SliderTheme(
         data: SliderTheme.of(context).copyWith(
           activeTrackColor: _accent,
-          inactiveTrackColor: const Color(0xFFDDDDDD),
+          inactiveTrackColor: _panelHighlight,
           thumbColor: _accent,
           overlayColor: _accent.withAlpha((0.10 * 255).round()),
         ),
@@ -1135,7 +1757,7 @@ class _EditorPageState extends State<EditorPage> {
             });
 
             _dragDebounce?.cancel();
-            _dragDebounce = Timer(const Duration(milliseconds: 70), () {
+            _dragDebounce = Timer(const Duration(milliseconds: 120), () {
               if (!mounted) return;
               _schedulePreviewRebuild(_PreviewQuality.low, immediate: true);
             });
@@ -1150,55 +1772,66 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Widget _buildPresetsTab() {
-    final builtIns = PresetRegistry.rankedFor(
-      aspect: _imageAspect,
-      isLowLight: false,
-      isIndoorGuess: false,
-      isPortraitGuess: false,
-    );
-
     final fallbackBytes = _previewBytes ?? _originalBytes!;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 18),
       children: [
-        const Text(
-          'Built-in presets',
-          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 10),
-        SizedBox(
-          height: 118,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: builtIns.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 12),
-            itemBuilder: (context, i) {
-              final p = builtIns[i];
-              return _RegistryPresetTile(
-                preset: p,
-                selected: _activePresetName == p.name,
-                accent: _accent,
-                fallbackBytes: fallbackBytes,
-                previewFuture: _getPresetPreviewBytes(p.name, p.values),
-                onApply: () => _applyRegistryPreset(p),
-              );
-            },
+        for (final pack in PresetRegistry.packs) ...[
+          Text(
+            pack.name,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.6,
+              color: _ink,
+            ),
           ),
-        ),
-        const SizedBox(height: 18),
-        const Divider(height: 1),
+          const SizedBox(height: 4),
+          Text(pack.description, style: TextStyle(fontSize: 12, color: _muted)),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 170,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: pack.presetIds.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 12),
+              itemBuilder: (context, i) {
+                final p = PresetRegistry.byId(pack.presetIds[i]);
+                return _RegistryPresetTile(
+                  preset: p,
+                  selected: _activePresetName == p.name,
+                  accent: _accent,
+                  ink: _ink,
+                  muted: _muted,
+                  panel: _panel,
+                  panelHighlight: _panelHighlight,
+                  fallbackBytes: fallbackBytes,
+                  previewFuture: _getPresetPreviewBytes(p.name, p.values),
+                  onApply: () => _applyRegistryPreset(p),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 18),
+        ],
+        Divider(height: 1, color: _ink.withAlpha(18)),
         const SizedBox(height: 14),
         Row(
           children: [
-            const Text(
-              'Your presets',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+            Text(
+              'Saved',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.6,
+                color: _muted,
+              ),
             ),
             const Spacer(),
             Text(
               'Saved: ${_presets.length}',
-              style: const TextStyle(fontSize: 12, color: Color(0xFF777777)),
+              style: TextStyle(fontSize: 11, color: _muted),
             ),
           ],
         ),
@@ -1209,7 +1842,7 @@ class _EditorPageState extends State<EditorPage> {
             child: Text(
               'No presets yet.\nSave one from the Edit tab.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Color(0xFF777777)),
+              style: TextStyle(color: _muted),
             ),
           )
         else
@@ -1217,6 +1850,11 @@ class _EditorPageState extends State<EditorPage> {
             (p) => _PresetCard(
               preset: p,
               selected: _activePresetName == p.name,
+              ink: _ink,
+              muted: _muted,
+              panel: _panel,
+              panelHighlight: _panelHighlight,
+              accent: _accent,
               onApply: () {
                 HapticFeedback.selectionClick();
                 _pushUndoCheckpoint();
@@ -1246,6 +1884,10 @@ class _RegistryPresetTile extends StatelessWidget {
   final Future<Uint8List> previewFuture;
   final Uint8List fallbackBytes;
   final Color accent;
+  final Color ink;
+  final Color muted;
+  final Color panel;
+  final Color panelHighlight;
 
   const _RegistryPresetTile({
     required this.preset,
@@ -1254,6 +1896,10 @@ class _RegistryPresetTile extends StatelessWidget {
     required this.previewFuture,
     required this.fallbackBytes,
     required this.accent,
+    required this.ink,
+    required this.muted,
+    required this.panel,
+    required this.panelHighlight,
   });
 
   @override
@@ -1266,20 +1912,20 @@ class _RegistryPresetTile extends StatelessWidget {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOut,
-          width: 150,
-          padding: const EdgeInsets.all(10),
+          width: 180,
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: selected ? const Color(0xFFF4F0F1) : Colors.white,
+            color: selected ? panelHighlight : panel,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: selected ? accent : const Color(0xFFE6E6E6),
+              color: selected ? accent : panelHighlight.withAlpha(200),
               width: selected ? 1.5 : 1,
             ),
             boxShadow: const [
               BoxShadow(
-                blurRadius: 14,
-                offset: Offset(0, 6),
-                color: Color(0x14000000),
+                blurRadius: 16,
+                offset: Offset(0, 8),
+                color: Color(0x24000000),
               ),
             ],
           ),
@@ -1289,7 +1935,7 @@ class _RegistryPresetTile extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: SizedBox(
-                  height: 56,
+                  height: 90,
                   width: double.infinity,
                   child: FutureBuilder<Uint8List>(
                     future: previewFuture,
@@ -1305,9 +1951,11 @@ class _RegistryPresetTile extends StatelessWidget {
                 preset.name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                  color: ink,
                 ),
               ),
             ],
@@ -1328,11 +1976,21 @@ class _PresetCard extends StatelessWidget {
   final _Preset preset;
   final VoidCallback onApply;
   final bool selected;
+  final Color ink;
+  final Color muted;
+  final Color panel;
+  final Color panelHighlight;
+  final Color accent;
 
   const _PresetCard({
     required this.preset,
     required this.onApply,
     required this.selected,
+    required this.ink,
+    required this.muted,
+    required this.panel,
+    required this.panelHighlight,
+    required this.accent,
   });
 
   @override
@@ -1345,11 +2003,11 @@ class _PresetCard extends StatelessWidget {
         child: Ink(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: selected ? const Color(0xFFEFEFEF) : const Color(0xFFF6F6F6),
+            color: selected ? panelHighlight : panel,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: selected ? Colors.black : const Color(0x00000000),
-              width: selected ? 1.2 : 0,
+              color: selected ? accent : const Color(0x00000000),
+              width: selected ? 1.1 : 0,
             ),
           ),
           child: Row(
@@ -1357,13 +2015,15 @@ class _PresetCard extends StatelessWidget {
               Expanded(
                 child: Text(
                   preset.name,
-                  style: const TextStyle(
-                    fontSize: 14,
+                  style: TextStyle(
+                    fontSize: 13,
                     fontWeight: FontWeight.w600,
+                    letterSpacing: 0.3,
+                    color: ink,
                   ),
                 ),
               ),
-              const Icon(Icons.check, size: 18, color: Color(0xFF777777)),
+              Icon(Icons.check, size: 18, color: muted),
             ],
           ),
         ),
@@ -1404,6 +2064,12 @@ class _HistoryState {
   final int groupIndex;
   final int toolIndex;
   final double imageAspect;
+  final double? cropAspect;
+  final int rotateQuarterTurns;
+  final Offset cropCenter;
+  final double cropScale;
+  final bool isFreeformCrop;
+  final Rect freeformCropRect;
   final String? activePresetName;
 
   const _HistoryState({
@@ -1412,48 +2078,208 @@ class _HistoryState {
     required this.groupIndex,
     required this.toolIndex,
     required this.imageAspect,
+    required this.cropAspect,
+    required this.rotateQuarterTurns,
+    required this.cropCenter,
+    required this.cropScale,
+    required this.isFreeformCrop,
+    required this.freeformCropRect,
     required this.activePresetName,
   });
 }
 
-class _FrameMaskPainter extends CustomPainter {
-  final Rect displayBox;
-  _FrameMaskPainter(this.displayBox);
+class _CropAspectOption {
+  final String label;
+  final double? aspect;
+  final bool isFreeform;
+
+  const _CropAspectOption(this.label, this.aspect, {this.isFreeform = false});
+}
+
+class _CropAspectSelector extends StatelessWidget {
+  final double? current;
+  final bool isFreeform;
+  final ValueChanged<_CropAspectOption> onSelect;
+  final Color activeColor;
+  final Color inactiveColor;
+  final Color activeTextColor;
+  final Color inactiveTextColor;
+
+  const _CropAspectSelector({
+    required this.current,
+    required this.isFreeform,
+    required this.onSelect,
+    required this.activeColor,
+    required this.inactiveColor,
+    required this.activeTextColor,
+    required this.inactiveTextColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const options = [
+      _CropAspectOption('Freeform', null, isFreeform: true),
+      _CropAspectOption('Original', null),
+      _CropAspectOption('Instagram Square', 1),
+      _CropAspectOption('Instagram Feed', 4 / 5),
+      _CropAspectOption('Reels/TikTok', 9 / 16),
+      _CropAspectOption('YouTube', 16 / 9),
+    ];
+
+    return SizedBox(
+      height: 36,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: options.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 10),
+        itemBuilder: (context, index) {
+          final opt = options[index];
+          final selected = opt.isFreeform
+              ? isFreeform
+              : (current == null && opt.aspect == null && !isFreeform) ||
+                    (current != null &&
+                        opt.aspect != null &&
+                        (current! - opt.aspect!).abs() < 0.0001);
+
+          return GestureDetector(
+            onTap: () => onSelect(opt),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: selected ? activeColor : inactiveColor,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                opt.label,
+                style: TextStyle(
+                  color: selected ? activeTextColor : inactiveTextColor,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _CropOverlayPainter extends CustomPainter {
+  final Rect normalizedRect;
+  _CropOverlayPainter(this.normalizedRect);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.white;
-    final full = Offset.zero & size;
+    final rect = Rect.fromLTWH(
+      normalizedRect.left * size.width,
+      normalizedRect.top * size.height,
+      normalizedRect.width * size.width,
+      normalizedRect.height * size.height,
+    );
 
-    canvas.drawRect(
-      Rect.fromLTRB(full.left, full.top, full.right, displayBox.top),
-      paint,
+    final shade = Paint()
+      ..color = Colors.black.withAlpha((0.35 * 255).round())
+      ..style = PaintingStyle.fill;
+
+    canvas.saveLayer(Offset.zero & size, Paint());
+    canvas.drawRect(Offset.zero & size, shade);
+    final clearPaint = Paint()
+      ..blendMode = BlendMode.clear
+      ..style = PaintingStyle.fill;
+    canvas.drawRect(rect, clearPaint);
+    canvas.restore();
+
+    final border = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    canvas.drawRect(rect, border);
+
+    final gridPaint = Paint()
+      ..color = Colors.white.withAlpha((0.45 * 255).round())
+      ..strokeWidth = 1.0;
+
+    final thirdW = rect.width / 3;
+    final thirdH = rect.height / 3;
+
+    canvas.drawLine(
+      Offset(rect.left + thirdW, rect.top),
+      Offset(rect.left + thirdW, rect.bottom),
+      gridPaint,
     );
-    canvas.drawRect(
-      Rect.fromLTRB(full.left, displayBox.bottom, full.right, full.bottom),
-      paint,
+    canvas.drawLine(
+      Offset(rect.left + thirdW * 2, rect.top),
+      Offset(rect.left + thirdW * 2, rect.bottom),
+      gridPaint,
     );
-    canvas.drawRect(
-      Rect.fromLTRB(
-        full.left,
-        displayBox.top,
-        displayBox.left,
-        displayBox.bottom,
-      ),
-      paint,
+    canvas.drawLine(
+      Offset(rect.left, rect.top + thirdH),
+      Offset(rect.right, rect.top + thirdH),
+      gridPaint,
     );
-    canvas.drawRect(
-      Rect.fromLTRB(
-        displayBox.right,
-        displayBox.top,
-        full.right,
-        displayBox.bottom,
-      ),
-      paint,
+    canvas.drawLine(
+      Offset(rect.left, rect.top + thirdH * 2),
+      Offset(rect.right, rect.top + thirdH * 2),
+      gridPaint,
     );
+
+    final handlePaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    const handleRadius = 4.0;
+    final handlePoints = [
+      rect.topLeft,
+      rect.topCenter,
+      rect.topRight,
+      rect.centerRight,
+      rect.bottomRight,
+      rect.bottomCenter,
+      rect.bottomLeft,
+      rect.centerLeft,
+    ];
+    for (final p in handlePoints) {
+      canvas.drawCircle(p, handleRadius, handlePaint);
+    }
   }
 
   @override
-  bool shouldRepaint(covariant _FrameMaskPainter oldDelegate) =>
-      oldDelegate.displayBox != displayBox;
+  bool shouldRepaint(covariant _CropOverlayPainter oldDelegate) {
+    return oldDelegate.normalizedRect != normalizedRect;
+  }
+}
+
+class _CropGestureState {
+  final Offset center;
+  final double scale;
+  final Offset focalPoint;
+  final Size displaySize;
+  final _CropDragMode mode;
+  final _CropHandle? handle;
+  final Rect startRect;
+
+  _CropGestureState({
+    required this.center,
+    required this.scale,
+    required this.focalPoint,
+    required this.displaySize,
+    required this.mode,
+    required this.handle,
+    required this.startRect,
+  });
+}
+
+enum _CropDragMode { moveScale, handle }
+
+enum _CropHandle {
+  topLeft,
+  top,
+  topRight,
+  right,
+  bottomRight,
+  bottom,
+  bottomLeft,
+  left,
 }

@@ -1,8 +1,8 @@
 name: luma
-description: "A new Flutter project."
+description: "Minimalist iOS photo editor built with Flutter and Core Image."
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 0.1.0+1
 
 environment:
   sdk: ^3.10.3
@@ -26,6 +26,7 @@ dependencies:
 
   # iOS-style icons
   cupertino_icons: ^1.0.8
+  flutter_native_splash: ^2.4.4
 
 dev_dependencies:
   flutter_test:
@@ -33,11 +34,10 @@ dev_dependencies:
 
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.2
-  flutter_native_splash: ^2.4.4
   
 flutter_launcher_icons:
   ios: true
-  android: true
+  android: false
   image_path: assets/branding/luma_app_icon_light.png
   remove_alpha_ios: true
   
@@ -65,5 +65,6 @@ flutter:
     # Branding
     - assets/branding/luma_app_icon_light.png
     - assets/branding/luma_app_icon_dark.png
-    - assets/branding/wordmark.png
+    - assets/branding/luma_mark_dark.png
+    - assets/branding/luma_mark_light.png
     - assets/branding/tagline.png

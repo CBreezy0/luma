@@ -19,6 +19,24 @@ import Flutter
 
     channel.setMethodCallHandler { call, result in
       let args = (call.arguments as? [String: Any]) ?? [:]
+      let crop = args["crop"] as? [String: Any]
+      let cropAspect = crop?["aspect"] as? Double
+      let cropStraighten = (crop?["straighten"] as? Double) ?? 0.0
+      let cropRotationTurns = (crop?["rotationTurns"] as? NSNumber)?.intValue ?? 0
+      let cropRect = crop?["rect"] as? [String: Any]
+      let cropRectX = cropRect?["x"] as? Double
+      let cropRectY = cropRect?["y"] as? Double
+      let cropRectW = cropRect?["w"] as? Double
+      let cropRectH = cropRect?["h"] as? Double
+      let normalizedCropRect: CGRect? = {
+        guard
+          let x = cropRectX,
+          let y = cropRectY,
+          let w = cropRectW,
+          let h = cropRectH
+        else { return nil }
+        return CGRect(x: x, y: y, width: w, height: h)
+      }()
 
       switch call.method {
       case "renderPreview":
@@ -37,7 +55,11 @@ import Flutter
           assetId: assetId,
           values: values,
           maxSide: maxSide,
-          quality: quality
+          quality: quality,
+          cropAspect: cropAspect,
+          rotationTurns: cropRotationTurns,
+          straightenDegrees: cropStraighten,
+          cropRect: normalizedCropRect
         ) { r in
           switch r {
           case .failure(let err):
@@ -61,7 +83,11 @@ import Flutter
         NativeRenderer.shared.exportFullRes(
           assetId: assetId,
           values: values,
-          quality: quality
+          quality: quality,
+          cropAspect: cropAspect,
+          rotationTurns: cropRotationTurns,
+          straightenDegrees: cropStraighten,
+          cropRect: normalizedCropRect
         ) { r in
           switch r {
           case .failure(let err):
