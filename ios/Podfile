@@ -63,6 +63,23 @@ post_install do |installer|
       elsif swift_other.is_a?(String)
         config.build_settings['OTHER_SWIFT_FLAGS'] = swift_other.gsub('-warnings-as-errors', '')
       end
+
+      if target.name == 'photo_manager'
+        excluded = config.build_settings['EXCLUDED_SOURCE_FILE_NAMES']
+        if excluded.is_a?(Array)
+          config.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = (excluded + ['PrivacyInfo.xcprivacy']).uniq
+        elsif excluded.is_a?(String) && !excluded.empty?
+          config.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = "#{excluded} PrivacyInfo.xcprivacy"
+        else
+          config.build_settings['EXCLUDED_SOURCE_FILE_NAMES'] = 'PrivacyInfo.xcprivacy'
+        end
+      end
+
+      if target.name == 'image_cropper'
+        # Avoid module verification issues with Flutter headers in framework builds.
+        config.build_settings['DEFINES_MODULE'] = 'NO'
+        config.build_settings['BUILD_LIBRARY_FOR_DISTRIBUTION'] = 'NO'
+      end
     end
   end
 end

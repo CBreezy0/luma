@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import 'features/gallery/gallery_page.dart';
-import 'features/editor/editor_page.dart';
+import 'features/editor/editor_page.dart' as editor;
 
 void main() {
   runApp(const LumaApp());
@@ -15,10 +15,7 @@ class LumaApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final router = GoRouter(
       routes: [
-        GoRoute(
-          path: '/',
-          builder: (context, state) => const GalleryPage(),
-        ),
+        GoRoute(path: '/', builder: (context, state) => const GalleryPage()),
         GoRoute(
           path: '/editor',
           builder: (context, state) {
@@ -28,7 +25,7 @@ class LumaApp extends StatelessWidget {
                 body: Center(child: Text('Missing assetId')),
               );
             }
-            return EditorPage(assetId: assetId);
+            return editor.EditorPage(assetId: assetId);
           },
         ),
       ],
@@ -38,11 +35,7 @@ class LumaApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Luma',
       routerConfig: router,
-
-      // Follow the device setting
       themeMode: ThemeMode.system,
-
-      // Light theme
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.light,
@@ -52,8 +45,6 @@ class LumaApp extends StatelessWidget {
           brightness: Brightness.light,
         ),
       ),
-
-      // Dark theme
       darkTheme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,

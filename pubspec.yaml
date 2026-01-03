@@ -16,7 +16,7 @@ dependencies:
   flutter_riverpod: ^2.5.1
 
   # Media / editing
-  photo_manager: ^3.2.1
+  photo_manager: ^3.8.3
   image_cropper: ^8.0.2
   image: ^4.2.0
   vector_math: ^2.1.4
