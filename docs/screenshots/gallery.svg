@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1440" viewBox="0 0 720 1440">
+  <rect width="720" height="1440" fill="#F6F3EF"/>
+  <rect x="40" y="80" width="640" height="200" rx="24" fill="#EDE7E1"/>
+  <text x="360" y="190" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="40" fill="#151411">Gallery</text>
+  <rect x="40" y="320" width="200" height="200" rx="24" fill="#E3DED7"/>
+  <rect x="260" y="320" width="200" height="200" rx="24" fill="#E3DED7"/>
+  <rect x="480" y="320" width="200" height="200" rx="24" fill="#E3DED7"/>
+  <rect x="40" y="540" width="200" height="200" rx="24" fill="#E3DED7"/>
+  <rect x="260" y="540" width="200" height="200" rx="24" fill="#E3DED7"/>
+  <rect x="480" y="540" width="200" height="200" rx="24" fill="#E3DED7"/>
+  <rect x="40" y="760" width="200" height="200" rx="24" fill="#E3DED7"/>
+  <rect x="260" y="760" width="200" height="200" rx="24" fill="#E3DED7"/>
+  <rect x="480" y="760" width="200" height="200" rx="24" fill="#E3DED7"/>
+</svg>

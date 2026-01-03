@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1440" viewBox="0 0 720 1440">
+  <rect width="720" height="1440" fill="#151515"/>
+  <rect x="60" y="160" width="600" height="800" rx="36" fill="#1C1C1C"/>
+  <rect x="90" y="210" width="540" height="700" rx="24" fill="#2A2A2A"/>
+  <text x="360" y="1020" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="32" fill="#F5F0EA">Editor</text>
+</svg>
