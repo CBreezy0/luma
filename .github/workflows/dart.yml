@@ -1,10 +1,10 @@
-\name: Flutter CI
+name: Flutter CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   build:
@@ -26,13 +26,8 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      # Optional: enforce formatting (recommended once codebase is clean)
-      # - name: Verify formatting
-      #   run: dart format --output=none --set-exit-if-changed .
-
       - name: Analyze project source
         run: flutter analyze
 
       - name: Run tests
         run: flutter test
-
