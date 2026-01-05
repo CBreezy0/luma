@@ -1,0 +1,20 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Build IPA and upload to TestFlight"
+  lane :beta do
+    # Make sure pods are installed (safe to run repeatedly)
+    cocoapods(clean_install: true)
+
+    # Build a signed IPA using the workspace/scheme
+    build_app(
+      workspace: "Runner.xcworkspace",
+      scheme: "Runner",
+      export_method: "app-store" # for TestFlight/App Store uploads
+    )
+
+    upload_to_testflight(
+      skip_waiting_for_build_processing: true
+    )
+  end
+end
