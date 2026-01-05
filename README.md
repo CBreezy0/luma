@@ -15,9 +15,13 @@ Image renderer for fast previews and high‑quality exports.
 - Undo/redo history
 - Export to Photos
 
+## Requirements
+- Flutter 3.38.5 (pinned in CI)
+- Xcode for iOS builds
+
 ## Run Locally
 ```bash
-flutter pub get
+flutter pub get --enforce-lockfile
 flutter run
 ```
 
@@ -25,6 +29,22 @@ flutter run
 ```bash
 flutter build ios --release
 ```
+
+## Quality
+```bash
+flutter analyze
+flutter test -r expanded
+```
+
+## Presets
+Presets are defined in `lib/features/presets/preset_registry.dart`. To add one:
+- Add a new `LumaPreset` entry to `PresetRegistry.all`.
+- Include it in the appropriate `LumaPresetPack` in `PresetRegistry.packs`.
+- Adjust its `values` map to match the desired look.
+
+## Screenshots
+![Splash](ios/Runner/Assets.xcassets/LaunchImage.imageset/LaunchImage.png)
+![Branding](assets/branding/luma_mark_light.png)
 
 ## Changelog (v0.1.0)
 - Premium editor stage background (dark, consistent)
