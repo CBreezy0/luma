@@ -44,6 +44,7 @@ class _EditorPageState extends State<EditorPage> {
   int _renderToken = 0;
 
   Timer? _dragDebounce;
+  Timer? _previewDelay;
 
   int _tabIndex = 0; // 0 Edit, 1 Presets
   int _groupIndex = 0;
@@ -261,6 +262,7 @@ class _EditorPageState extends State<EditorPage> {
   @override
   void dispose() {
     _dragDebounce?.cancel();
+    _previewDelay?.cancel();
     super.dispose();
   }
 
@@ -379,7 +381,16 @@ class _EditorPageState extends State<EditorPage> {
     }
 
     final delayMs = (quality == _PreviewQuality.low) ? 0 : 40;
-    Future.delayed(Duration(milliseconds: delayMs), () {
+
+    // Cancel any queued delayed rebuild so we don't leave pending timers around.
+    _previewDelay?.cancel();
+
+    if (delayMs == 0) {
+      unawaited(_rebuildPreview(quality));
+      return;
+    }
+
+    _previewDelay = Timer(Duration(milliseconds: delayMs), () {
       if (!mounted) return;
       unawaited(_rebuildPreview(quality));
     });
