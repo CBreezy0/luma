@@ -1,4 +1,4 @@
-name: Release
+name: Release (iOS)
 
 on:
   push:
@@ -6,29 +6,23 @@ on:
       - "v*"
 
 jobs:
-  android:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+  ios:
+    name: iOS build (no signing)
+    runs-on: macos-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.38.5"
-          channel: stable
           cache: true
 
-      - name: Install dependencies
+      - name: Install dependencies (lockfile enforced)
         run: flutter pub get --enforce-lockfile
 
-      - name: Build Android APK
-        run: flutter build apk --release
-
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          files: build/app/outputs/flutter-apk/app-release.apk
+      # Builds iOS app for simulator (does not require signing)
+      - name: Build iOS (simulator)
+        run: flutter build ios --simulator --release --no-codesign
