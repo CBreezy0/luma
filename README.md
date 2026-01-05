@@ -1,6 +1,6 @@
 # Luma
 
-First Beta: v0.1.0
+First Beta: v1.0.0
 
 Luma — minimalist iOS photo editor
 
