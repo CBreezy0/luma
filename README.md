@@ -46,7 +46,7 @@ Presets are defined in `lib/features/presets/preset_registry.dart`. To add one:
 ![Splash](ios/Runner/Assets.xcassets/LaunchImage.imageset/LaunchImage.png)
 ![Branding](assets/branding/luma_mark_light.png)
 
-## Changelog (v0.1.0)
+## Changelog (v1.0.0)
 - Premium editor stage background (dark, consistent)
 - Signature preset packs with curated names + descriptions
 - Film pack includes "Neutral Scan" anchor preset
