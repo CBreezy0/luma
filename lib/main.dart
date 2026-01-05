@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'features/gallery/gallery_page.dart';
 
@@ -46,10 +48,13 @@ class SplashPage extends StatefulWidget {
 }
 
 class _SplashPageState extends State<SplashPage> {
+  Timer? _startupDelay;
+
   @override
   void initState() {
     super.initState();
-    Future.delayed(const Duration(seconds: 2), () {
+    _startupDelay?.cancel();
+    _startupDelay = Timer(const Duration(seconds: 2), () {
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
@@ -60,6 +65,12 @@ class _SplashPageState extends State<SplashPage> {
         ),
       );
     });
+  }
+
+  @override
+  void dispose() {
+    _startupDelay?.cancel();
+    super.dispose();
   }
 
   @override

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -15,6 +16,7 @@ class GalleryPage extends StatefulWidget {
 class _GalleryPageState extends State<GalleryPage> {
   bool _loading = true;
   bool _denied = false;
+  Timer? _initDelay;
 
   final List<AssetEntity> _assets = [];
   final Map<String, Uint8List> _thumbCache = {};
@@ -38,12 +40,15 @@ class _GalleryPageState extends State<GalleryPage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _init();
+      _initDelay?.cancel();
+      _initDelay = Timer(const Duration(milliseconds: 300), () {
+        if (!mounted) return;
+        _init();
+      });
     });
   }
 
   Future<void> _init() async {
-    await Future.delayed(const Duration(milliseconds: 300));
     final perm = await PhotoManager.requestPermissionExtend();
     if (!mounted) return;
 
@@ -59,6 +64,12 @@ class _GalleryPageState extends State<GalleryPage> {
     if (!mounted) return;
 
     setState(() => _loading = false);
+  }
+
+  @override
+  void dispose() {
+    _initDelay?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadMore({bool reset = false}) async {
