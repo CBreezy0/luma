@@ -2,7 +2,7 @@ name: luma
 description: "Minimalist iOS photo editor built with Flutter and Core Image."
 publish_to: 'none'
 
-version: 0.1.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.10.3
