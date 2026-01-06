@@ -6,6 +6,11 @@ import Flutter
 #if canImport(Flutter)
 @main
 @objc class AppDelegate: FlutterAppDelegate {
+  private let previewRenderQueue = DispatchQueue(
+    label: "com.luma.preview.render",
+    qos: .userInitiated
+  )
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -50,22 +55,40 @@ import Flutter
         }
 
         let quality = (args["quality"] as? Double) ?? 0.82
+        let previewTier = (args["previewTier"] as? String) ?? "final"
+        let isDragPreview = previewTier == "drag"
+        let requestId = (args["requestId"] as? NSNumber)?.intValue ?? 0
+        let presetValues = args["presetValues"] as? [String: Double]
+        let presetIntensity = (args["presetIntensity"] as? Double) ?? 1.0
+        let presetBlendMode = (args["presetBlendMode"] as? String) ?? "params"
 
-        NativeRenderer.shared.renderPreview(
-          assetId: assetId,
-          values: values,
-          maxSide: maxSide,
-          quality: quality,
-          cropAspect: cropAspect,
-          rotationTurns: cropRotationTurns,
-          straightenDegrees: cropStraighten,
-          cropRect: normalizedCropRect
-        ) { r in
-          switch r {
-          case .failure(let err):
-            result(FlutterError(code: "render_failed", message: err.localizedDescription, details: nil))
-          case .success(let data):
-            result(FlutterStandardTypedData(bytes: data))
+        self.previewRenderQueue.async {
+          NativeRenderer.shared.renderPreview(
+            assetId: assetId,
+            values: values,
+            maxSide: maxSide,
+            quality: quality,
+            cropAspect: cropAspect,
+            rotationTurns: cropRotationTurns,
+            straightenDegrees: cropStraighten,
+            cropRect: normalizedCropRect,
+            isDragPreview: isDragPreview,
+            requestId: requestId,
+            presetValues: presetValues,
+            presetIntensity: presetIntensity,
+            presetBlendMode: presetBlendMode
+          ) { r in
+            DispatchQueue.main.async {
+              switch r {
+              case .failure(let err):
+                result(FlutterError(code: "render_failed", message: err.localizedDescription, details: nil))
+              case .success(let data):
+                result([
+                  "requestId": requestId,
+                  "bytes": FlutterStandardTypedData(bytes: data),
+                ])
+              }
+            }
           }
         }
 

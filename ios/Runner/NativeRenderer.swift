@@ -7,6 +7,11 @@ import ImageIO
 final class NativeRenderer {
   static let shared = NativeRenderer()
 
+  private let renderQueue = DispatchQueue(
+    label: "com.luma.preview.render",
+    qos: .userInitiated
+  )
+
   // Force predictable color output (fixes purple/magenta)
   private let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
 
@@ -20,6 +25,14 @@ final class NativeRenderer {
     ])
   }()
 
+  private lazy var mixKernel: CIColorKernel = {
+    let src =
+      "kernel vec4 mixKernel(__sample a, __sample b, float t) {" +
+      "  return mix(a, b, t);" +
+      "}"
+    return CIColorKernel(source: src)!
+  }()
+
   // MARK: - Public API
 
   func renderPreview(
@@ -31,27 +44,77 @@ final class NativeRenderer {
     rotationTurns: Int = 0,
     straightenDegrees: Double = 0,
     cropRect: CGRect? = nil,
+    isDragPreview: Bool = false,
+    requestId: Int = 0,
+    presetValues: [String: Double]? = nil,
+    presetIntensity: Double = 1.0,
+    presetBlendMode: String = "params",
     completion: @escaping (Result<Data, Error>) -> Void
   ) {
-    fetchFullCIImage(assetId: assetId) { result in
-      switch result {
-      case .failure(let err):
-        completion(.failure(err))
-      case .success(let input):
-        let cropped = self.applyCropAndRotation(
-          image: input,
-          aspect: cropAspect,
-          rotationTurns: rotationTurns,
-          straightenDegrees: straightenDegrees,
-          cropRect: cropRect
-        )
-        let filtered = self.applyAdjustments(input: cropped, values: values)
-        let scaled = self.downscale(ciImage: filtered, maxSide: maxSide)
-        guard let jpeg = self.encodeJPEG(ciImage: scaled, quality: quality) else {
-          completion(.failure(NSError(domain: "NativeRenderer", code: -3, userInfo: [NSLocalizedDescriptionKey: "JPEG encode failed"])))
-          return
+    renderQueue.async {
+      self.fetchFullCIImage(
+        assetId: assetId,
+        downsampleMaxSide: isDragPreview ? maxSide : nil
+      ) { result in
+        switch result {
+        case .failure(let err):
+          completion(.failure(err))
+        case .success(let input):
+          let cropped = self.applyCropAndRotation(
+            image: input,
+            aspect: cropAspect,
+            rotationTurns: rotationTurns,
+            straightenDegrees: straightenDegrees,
+            cropRect: cropRect
+          )
+          let t = self.clamp01(presetIntensity)
+          let useImageBlend = (presetBlendMode == "image")
+            && !isDragPreview
+            && presetValues != nil
+
+          let output: CIImage
+          if useImageBlend {
+            let base = self.applyAdjustments(input: cropped, values: values)
+            if t <= 0.0001 {
+              output = base
+            } else {
+              var fullValues = values
+              if let presetValues = presetValues {
+                for (key, value) in presetValues {
+                  fullValues[key] = (fullValues[key] ?? 0.0) + value
+                }
+              }
+              let presetFull = self.applyAdjustments(input: cropped, values: fullValues)
+              if t >= 0.9999 {
+                output = presetFull
+              } else if let mixed = self.mixKernel.apply(
+                extent: base.extent,
+                arguments: [base, presetFull, t]
+              ) {
+                output = mixed
+              } else {
+                output = presetFull
+              }
+            }
+          } else if let presetValues = presetValues, presetBlendMode == "params" {
+            var merged = values
+            if t > 0.0001 {
+              for (key, value) in presetValues {
+                merged[key] = (merged[key] ?? 0.0) + value * t
+              }
+            }
+            output = self.applyAdjustments(input: cropped, values: merged)
+          } else {
+            output = self.applyAdjustments(input: cropped, values: values)
+          }
+
+          let scaled = self.downscale(ciImage: output, maxSide: maxSide)
+          guard let jpeg = self.encodeJPEG(ciImage: scaled, quality: quality) else {
+            completion(.failure(NSError(domain: "NativeRenderer", code: -3, userInfo: [NSLocalizedDescriptionKey: "JPEG encode failed"])))
+            return
+          }
+          completion(.success(jpeg))
         }
-        completion(.success(jpeg))
       }
     }
   }
@@ -134,7 +197,11 @@ final class NativeRenderer {
 
   // MARK: - PhotoKit decode (full-res)
 
-  private func fetchFullCIImage(assetId: String, completion: @escaping (Result<CIImage, Error>) -> Void) {
+  private func fetchFullCIImage(
+    assetId: String,
+    downsampleMaxSide: Int? = nil,
+    completion: @escaping (Result<CIImage, Error>) -> Void
+  ) {
     let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
     guard let asset = fetch.firstObject else {
       completion(.failure(NSError(domain: "NativeRenderer", code: -1, userInfo: [NSLocalizedDescriptionKey: "PHAsset not found for id: \(assetId)"])))
@@ -148,25 +215,47 @@ final class NativeRenderer {
     opts.version = .current
 
     PHImageManager.default().requestImageDataAndOrientation(for: asset, options: opts) { data, _, orientation, _ in
-      guard let data = data else {
-        completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "No image data returned"])))
-        return
+      self.renderQueue.async {
+        guard let data = data else {
+          completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "No image data returned"])))
+          return
+        }
+
+        var ci: CIImage
+        if let maxSide = downsampleMaxSide {
+          guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "Image source decode failed"])))
+            return
+          }
+          let options: [NSString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxSide,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceShouldCache: true,
+          ]
+          guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "Thumbnail decode failed"])))
+            return
+          }
+          ci = CIImage(cgImage: cgImage)
+        } else {
+          guard let decoded = CIImage(data: data) else {
+            completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "CIImage decode failed (data)"])))
+            return
+          }
+          ci = decoded
+        }
+
+        // Safer orientation handling across iOS versions
+        ci = ci.oriented(forExifOrientation: Int32(orientation.rawValue))
+
+        // Optional: attempt to coerce to sRGB via CIColorSpaceConvert (best-effort)
+        if let converted = self.coerceToSRGB(ci) {
+          ci = converted
+        }
+
+        completion(.success(ci))
       }
-
-      guard var ci = CIImage(data: data) else {
-        completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "CIImage decode failed (data)"])))
-        return
-      }
-
-      // Safer orientation handling across iOS versions
-      ci = ci.oriented(forExifOrientation: Int32(orientation.rawValue))
-
-      // Optional: attempt to coerce to sRGB via CIColorSpaceConvert (best-effort)
-      if let converted = self.coerceToSRGB(ci) {
-        ci = converted
-      }
-
-      completion(.success(ci))
     }
   }
 
