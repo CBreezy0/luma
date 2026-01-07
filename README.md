@@ -1,6 +1,7 @@
 # Luma
 
 First Beta: v0.1.0
+Current Beta: v1.0.1
 
 Luma — minimalist iOS photo editor
 
@@ -30,7 +31,11 @@ flutter run
 ## Build
 ```bash
 flutter build ios --release
+flutter build apk --release
 ```
+
+## Feedback
+GitHub Issues: https://github.com/CBreezy0/luma/issues
 
 ## Changelog (v0.1.0)
 - Premium editor stage background (dark, consistent)
