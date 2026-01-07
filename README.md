@@ -5,12 +5,6 @@ Current Beta: v1.0.1
 
 Luma — minimalist iOS photo editor
 
-## Screenshots
-<p>
-  <img src="docs/screenshots/gallery.svg" width="240" alt="Gallery" />
-  <img src="docs/screenshots/editor.svg" width="240" alt="Editor" />
-</p>
-
 ## Overview
 Luma is a minimalist iOS photo editor built with Flutter and a native Core
 Image renderer for fast previews and high‑quality exports.
