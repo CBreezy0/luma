@@ -8,49 +8,81 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image/image.dart' as img;
 import 'package:photo_manager/photo_manager.dart';
 
-import '../presets/preset_registry.dart' show LumaPreset, PresetRegistry;
+import '../favorites/favorites_provider.dart';
+import '../presets/preset_models.dart';
+import '../presets/preset_ui.dart';
+import '../samples/sample_images.dart';
 import 'native/native_renderer.dart';
 
-class EditorPage extends StatefulWidget {
+class EditorPage extends ConsumerStatefulWidget {
   final String assetId;
 
   const EditorPage({super.key, required this.assetId});
 
   @override
-  State<EditorPage> createState() => _EditorPageState();
+  ConsumerState<EditorPage> createState() => _EditorPageState();
 }
 
 enum _PreviewQuality { low, high }
 
-class _EditorPageState extends State<EditorPage> {
+enum PresetStage { categories, list, active }
+
+class _EditorPageState extends ConsumerState<EditorPage> {
+  static const String _presetIntensityToolId = '__preset_intensity__';
+  static const String _savedCategoryId = 'saved';
   static const Color _accent = Color(0xFFB08A6E);
   static const Color _ink = Color(0xFFF5F0EA);
   static const Color _muted = Color(0xFFB0A69A);
   static const Color _panel = Color(0xFF1C1C1C);
   static const Color _panelHighlight = Color(0xFF262626);
   static const Color _canvas = Color(0xFF151515);
+  static const double _defaultPresetIntensity = 0.7;
 
   Uint8List? _originalBytes;
   Uint8List? _previewBytes;
+  ImageProvider? _frontPreview;
+  ImageProvider? _backPreview;
+  Uint8List? _backPreviewBytes;
+  ImageStream? _backPreviewStream;
+  ImageStreamListener? _backPreviewListener;
+  bool _showBackPreview = false;
+  int _previewFrameToken = 0;
+  static const Duration _previewFadeDuration = Duration(milliseconds: 100);
+  static const double _dragPreviewScale = 0.6;
   double _imageAspect = 4 / 5;
   bool _loading = true;
+  SampleImage? _sampleImage;
+  bool _showOriginalHold = false;
+  bool _showOriginalToggle = false;
 
   bool _buildingPreview = false;
   bool _buildingHQ = false;
   _PreviewQuality? _pendingQuality;
   int _renderToken = 0;
+  int _previewRequestId = 0;
+  int _latestPresentedRequestId = 0;
+  bool _dragRenderInFlight = false;
+  String? _dragToolId;
+  String? _pendingDragToolId;
+  double? _pendingDragValue;
+  int _pendingDragOverwriteCount = 0;
+  int _dragRenderSeq = 0;
 
   Timer? _dragDebounce;
   Timer? _previewDelay;
 
-  int _tabIndex = 0; // 0 Edit, 1 Presets
+  int _tabIndex = 1; // 0 Edit, 1 Presets
   int _groupIndex = 0;
   int _toolIndex = 0;
+  int? _preCropToolIndex;
 
   String? _activePresetName;
+  bool _isCropMode = false;
+  bool _isDragging = false;
   double? _cropAspect;
   int _rotateQuarterTurns = 0;
   Offset _cropCenter = const Offset(0.5, 0.5);
@@ -59,9 +91,16 @@ class _EditorPageState extends State<EditorPage> {
   static const double _minCropScale = 0.25;
   bool _isFreeformCrop = false;
   Rect _freeformCropRect = const Rect.fromLTWH(0.1, 0.1, 0.8, 0.8);
+  _CropSnapshot? _cropSnapshot;
 
   final Map<String, double> _values = {};
   final Map<String, double> _defaultValues = {};
+  Map<String, double>? _activePresetValues;
+  String? _activePresetId;
+  double _presetIntensityRaw = _defaultPresetIntensity;
+  PresetStage _presetStage = PresetStage.categories;
+  String? _selectedCategoryId;
+  _PresetSnapshot? _presetSnapshot;
 
   final List<_Preset> _presets = [];
   final List<_HistoryState> _undoStack = [];
@@ -70,8 +109,15 @@ class _EditorPageState extends State<EditorPage> {
   final Map<String, Uint8List> _presetPreviewCache = {};
   final Map<String, Future<Uint8List>> _presetPreviewFutures = {};
   final Map<String, Uint8List> _previewCache = {};
-  final Map<String, Future<Uint8List>> _previewFutures = {};
+  final Map<String, Future<PreviewResult>> _previewFutures = {};
   static const int _previewCacheLimit = 12;
+  final GlobalKey _adjustmentPillKey = GlobalKey();
+  final _Throttler _previewThrottler = _Throttler(
+    interval: Duration(milliseconds: 33),
+  );
+  final _Throttler _dragPreviewThrottler = _Throttler(
+    interval: Duration(milliseconds: 180),
+  );
 
   bool get _canUndo => _undoStack.isNotEmpty;
   bool get _canRedo => _redoStack.isNotEmpty;
@@ -131,7 +177,7 @@ class _EditorPageState extends State<EditorPage> {
         _ToolItem(id: 'tint', label: 'Tint', min: -1, max: 1, defaultValue: 0),
         _ToolItem(
           id: 'color_balance',
-          label: 'Balance',
+          label: 'Warmth',
           min: -1,
           max: 1,
           defaultValue: 0,
@@ -248,8 +294,42 @@ class _EditorPageState extends State<EditorPage> {
     ),
   ];
 
-  _ToolGroup get _activeGroup => _groups[_groupIndex];
-  _ToolItem get _activeTool => _activeGroup.tools[_toolIndex];
+  static const List<String> _quickAdjustmentIds = [
+    'auto',
+    'exposure',
+    'highlights',
+    'shadows',
+    'color_balance',
+  ];
+
+  late final Map<String, _ToolItem> _toolsById = {
+    for (final group in _groups)
+      for (final tool in group.tools) tool.id: tool,
+  };
+
+  late final List<_ToolItem> _allAdjustmentTools = [
+    for (final group in _groups) ...group.tools,
+  ];
+  late final List<String> _allAdjustmentIds = [
+    for (final tool in _allAdjustmentTools) tool.id,
+  ];
+
+  List<_ToolItem> get _quickAdjustments => [
+    for (final id in _quickAdjustmentIds)
+      if (_toolsById.containsKey(id)) _toolsById[id]!,
+  ];
+
+  int get _activeAdjustmentIndex =>
+      _clampIndex(_toolIndex, _allAdjustmentIds.length);
+  String get _activeAdjustmentId => _allAdjustmentIds[_activeAdjustmentIndex];
+  _ToolItem get _activeTool => _toolsById[_activeAdjustmentId]!;
+  int _clampIndex(int value, int length) {
+    if (length <= 0) return 0;
+    if (value < 0) return 0;
+    if (value >= length) return length - 1;
+    return value;
+  }
+
   double get _straightenDegrees => _v('straighten') * 8.0;
 
   @override
@@ -263,6 +343,9 @@ class _EditorPageState extends State<EditorPage> {
   void dispose() {
     _dragDebounce?.cancel();
     _previewDelay?.cancel();
+    _previewThrottler.dispose();
+    _dragPreviewThrottler.dispose();
+    _clearBackPreviewListener();
     super.dispose();
   }
 
@@ -295,17 +378,25 @@ class _EditorPageState extends State<EditorPage> {
       isFreeformCrop: _isFreeformCrop,
       freeformCropRect: _freeformCropRect,
       activePresetName: _activePresetName,
+      activePresetValues:
+          _activePresetValues == null
+              ? null
+              : Map<String, double>.from(_activePresetValues!),
+      activePresetId: _activePresetId,
+      presetIntensityRaw: _presetIntensityRaw,
     );
   }
 
   void _restoreState(_HistoryState s) {
     setState(() {
+      final safeToolIndex = _clampIndex(s.toolIndex, _allAdjustmentIds.length);
       _values
         ..clear()
         ..addAll(s.values);
       _tabIndex = s.tabIndex;
-      _groupIndex = s.groupIndex;
-      _toolIndex = s.toolIndex;
+      _groupIndex = 0;
+      _toolIndex = safeToolIndex;
+      _isCropMode = false;
       _imageAspect = s.imageAspect;
       _cropAspect = s.cropAspect;
       _rotateQuarterTurns = s.rotateQuarterTurns;
@@ -314,8 +405,68 @@ class _EditorPageState extends State<EditorPage> {
       _isFreeformCrop = s.isFreeformCrop;
       _freeformCropRect = s.freeformCropRect;
       _activePresetName = s.activePresetName;
+      _activePresetValues =
+          s.activePresetValues == null
+              ? null
+              : Map<String, double>.from(s.activePresetValues!);
+      _activePresetId = s.activePresetId;
+      _presetIntensityRaw = s.presetIntensityRaw;
     });
     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+  }
+
+  _PresetSnapshot _capturePresetSnapshot() {
+    return _PresetSnapshot(
+      state: _captureState(),
+      stage: _presetStage,
+      selectedCategoryId: _selectedCategoryId,
+      activePresetId: _activePresetId,
+    );
+  }
+
+  void _restorePresetSnapshot(_PresetSnapshot snapshot) {
+    _restoreState(snapshot.state);
+    setState(() {
+      _presetStage = snapshot.stage;
+      _selectedCategoryId = snapshot.selectedCategoryId;
+      _activePresetId = snapshot.activePresetId;
+    });
+  }
+
+  void _selectPresetCategory(String id) {
+    setState(() {
+      _selectedCategoryId = id;
+      _presetStage = PresetStage.list;
+    });
+  }
+
+  void _selectRegistryPreset(LumaPreset preset) {
+    _presetSnapshot = _capturePresetSnapshot();
+    _applyRegistryPreset(preset);
+  }
+
+  void _selectSavedPreset(_Preset preset) {
+    _presetSnapshot = _capturePresetSnapshot();
+    _applySavedPreset(preset);
+  }
+
+  void _cancelPresetSelection() {
+    final snapshot = _presetSnapshot;
+    _presetSnapshot = null;
+    if (snapshot == null) {
+      setState(() {
+        _presetStage = PresetStage.list;
+      });
+      return;
+    }
+    _restorePresetSnapshot(snapshot);
+  }
+
+  void _finishPresetSelection() {
+    setState(() {
+      _presetStage = PresetStage.list;
+    });
+    _presetSnapshot = null;
   }
 
   void _undo() {
@@ -335,6 +486,40 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Future<void> _loadImage() async {
+    if (widget.assetId.startsWith('sample:')) {
+      final sample = SampleImages.byId(widget.assetId);
+      if (sample == null) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        return;
+      }
+      final data = await SampleImages.loadBytes(sample.assetPath);
+      final decoded = img.decodeImage(data);
+      final aspect =
+          (decoded == null || decoded.height == 0)
+              ? (4 / 5)
+              : (decoded.width / decoded.height);
+
+      if (!mounted) return;
+
+      setState(() {
+        _sampleImage = sample;
+        _originalBytes = data;
+        _previewBytes = data;
+        _frontPreview = MemoryImage(data);
+        _imageAspect = aspect;
+        _loading = false;
+      });
+
+      _pushUndoCheckpoint();
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+      });
+      return;
+    }
+
     final asset = await AssetEntity.fromId(widget.assetId);
     if (asset == null) {
       if (!mounted) return;
@@ -354,6 +539,8 @@ class _EditorPageState extends State<EditorPage> {
 
     setState(() {
       _originalBytes = data;
+      _previewBytes = data;
+      _frontPreview = data == null ? null : MemoryImage(data);
       _imageAspect = aspect;
       _loading = false;
     });
@@ -363,6 +550,186 @@ class _EditorPageState extends State<EditorPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+    });
+  }
+
+  void _debugDragLog(String Function() messageBuilder) {
+    assert(() {
+      debugPrint(messageBuilder());
+      return true;
+    }());
+  }
+
+  void _clearPendingDragRequest() {
+    _pendingDragToolId = null;
+    _pendingDragValue = null;
+    _pendingDragOverwriteCount = 0;
+  }
+
+  void _requestDragPreviewRender(String toolId, double value) {
+    if (toolId == _presetIntensityToolId) {
+      _presetIntensityRaw = value.clamp(0.0, 1.0);
+    } else {
+      _values[toolId] = value;
+    }
+
+    if (_dragRenderInFlight) {
+      _pendingDragToolId = toolId;
+      _pendingDragValue = value;
+      _pendingDragOverwriteCount++;
+      _debugDragLog(
+        () =>
+            '[drag] pending overwrite=$_pendingDragOverwriteCount inFlight=true',
+      );
+      return;
+    }
+
+    _dragRenderInFlight = true;
+    final requestId = ++_dragRenderSeq;
+    final overwrites = _pendingDragOverwriteCount;
+    _pendingDragOverwriteCount = 0;
+    _debugDragLog(
+      () => '[drag] start #$requestId inFlight=true overwrites=$overwrites',
+    );
+    unawaited(_runDragRender(requestId));
+  }
+
+  Future<void> _runDragRender(int requestId) async {
+    try {
+      await _rebuildPreview(_PreviewQuality.low);
+    } finally {
+      _dragRenderInFlight = false;
+    }
+    _debugDragLog(
+      () =>
+          '[drag] end #$requestId inFlight=false pending=$_pendingDragOverwriteCount',
+    );
+    if (!_isDragging) {
+      _clearPendingDragRequest();
+      return;
+    }
+    final nextTool = _pendingDragToolId;
+    final nextValue = _pendingDragValue;
+    if (nextTool == null || nextValue == null) return;
+    _clearPendingDragRequest();
+    _requestDragPreviewRender(nextTool, nextValue);
+  }
+
+  void _clearBackPreviewListener() {
+    if (_backPreviewStream != null && _backPreviewListener != null) {
+      _backPreviewStream!.removeListener(_backPreviewListener!);
+    }
+    _backPreviewStream = null;
+    _backPreviewListener = null;
+  }
+
+  void _presentPreviewBytes(
+    Uint8List bytes, {
+    required bool allowFade,
+    required int requestId,
+  }) {
+    if (_isDragging) {
+      _presentPreviewBytesDuringDrag(bytes, requestId: requestId);
+      return;
+    }
+    if (requestId < _latestPresentedRequestId) return;
+    _latestPresentedRequestId = requestId;
+    _clearBackPreviewListener();
+    final token = ++_previewFrameToken;
+    final provider = MemoryImage(bytes);
+    final config = createLocalImageConfiguration(context);
+    final stream = provider.resolve(config);
+    ImageStreamListener? listener;
+    listener = ImageStreamListener(
+      (_, _) {
+        stream.removeListener(listener!);
+        _backPreviewStream = null;
+        _backPreviewListener = null;
+        if (!mounted) return;
+        if (token != _previewFrameToken) return;
+        if (!allowFade || _frontPreview == null) {
+          setState(() {
+            _frontPreview = provider;
+            _previewBytes = bytes;
+            _backPreview = null;
+            _backPreviewBytes = null;
+            _showBackPreview = false;
+            _buildingPreview = false;
+            _buildingHQ = false;
+          });
+          return;
+        }
+        setState(() {
+          _backPreview = provider;
+          _backPreviewBytes = bytes;
+          _showBackPreview = true;
+          _buildingPreview = false;
+          _buildingHQ = false;
+        });
+      },
+      onError: (_, _) {
+        stream.removeListener(listener!);
+        _backPreviewStream = null;
+        _backPreviewListener = null;
+        if (!mounted) return;
+        setState(() {
+          _buildingPreview = false;
+          _buildingHQ = false;
+        });
+      },
+    );
+    _backPreviewStream = stream;
+    _backPreviewListener = listener;
+    stream.addListener(listener);
+  }
+
+  void _presentPreviewBytesDuringDrag(
+    Uint8List bytes, {
+    required int requestId,
+  }) {
+    if (bytes.isEmpty) return;
+    if (requestId < _latestPresentedRequestId) return;
+    _latestPresentedRequestId = requestId;
+    _clearBackPreviewListener();
+    setState(() {
+      _frontPreview = MemoryImage(bytes);
+      _previewBytes = bytes;
+      _backPreview = null;
+      _backPreviewBytes = null;
+      _showBackPreview = false;
+      _buildingPreview = false;
+      _buildingHQ = false;
+    });
+  }
+
+  double get _effectivePresetIntensity {
+    return _presetIntensityRaw.clamp(0.0, 1.0);
+  }
+
+  Map<String, double> _effectiveValues() {
+    final base = Map<String, double>.from(_values);
+    final presetValues = _activePresetValues;
+    if (presetValues == null) return base;
+    final intensity = _effectivePresetIntensity;
+    if (intensity <= 0.0) return base;
+    for (final entry in presetValues.entries) {
+      final id = entry.key;
+      final presetValue = entry.value;
+      final defaultValue = _defaultValues[id] ?? 0.0;
+      final baseValue = base[id] ?? defaultValue;
+      base[id] = baseValue + (presetValue - defaultValue) * intensity;
+    }
+    return base;
+  }
+
+  void _promoteBackPreview() {
+    if (_backPreview == null || _backPreviewBytes == null) return;
+    setState(() {
+      _frontPreview = _backPreview;
+      _previewBytes = _backPreviewBytes;
+      _backPreview = null;
+      _backPreviewBytes = null;
+      _showBackPreview = false;
     });
   }
 
@@ -400,42 +767,81 @@ class _EditorPageState extends State<EditorPage> {
     if (_originalBytes == null) return;
 
     final int token = ++_renderToken;
+    final isDragLow = quality == _PreviewQuality.low && _isDragging;
+    final isIntensityDrag =
+        isDragLow && _dragToolId == _presetIntensityToolId;
+    if (!isDragLow) {
+      setState(() {
+        _buildingPreview = true;
+        if (quality == _PreviewQuality.high) _buildingHQ = true;
+      });
+    }
 
-    setState(() {
-      _buildingPreview = true;
-      if (quality == _PreviewQuality.high) _buildingHQ = true;
-    });
+    var maxSide = (quality == _PreviewQuality.low) ? 700 : 1600;
+    var q = (quality == _PreviewQuality.low) ? 0.70 : 0.82;
+    if (_isDragging && quality == _PreviewQuality.low && !isIntensityDrag) {
+      maxSide = math.max(1, (maxSide * _dragPreviewScale).round());
+    }
+    if (isIntensityDrag) {
+      maxSide = 1600;
+      q = 0.82;
+    }
 
-    final maxSide = (quality == _PreviewQuality.low) ? 700 : 1600;
-    final q = (quality == _PreviewQuality.low) ? 0.70 : 0.82;
+    final presetValues = _activePresetValues;
+    final presetIntensity =
+        (presetValues == null) ? null : _presetIntensityRaw.clamp(0.0, 1.0);
+    final Map<String, double> valuesForRender;
+    Map<String, double>? presetValuesForRender = presetValues;
+    String? presetBlendMode;
 
-    final useCropRect = _activeGroup.label != 'Crop';
-    final cacheKey = _previewKey(maxSide, q, useCropRect: useCropRect);
-    final cached = _previewCache[cacheKey];
+    if (isDragLow && presetValues != null && !isIntensityDrag) {
+      valuesForRender = _effectiveValues();
+      presetValuesForRender = null;
+      presetBlendMode = null;
+    } else {
+      valuesForRender = Map<String, double>.from(_values);
+      presetBlendMode = presetValues == null ? null : 'image';
+    }
+    final useCropRect =
+        !_isCropMode &&
+        _normalizedCropRect() != const Rect.fromLTWH(0, 0, 1, 1);
+    final cacheKey = _previewKey(
+      valuesForRender,
+      maxSide,
+      q,
+      useCropRect: useCropRect,
+      presetValues: presetValuesForRender,
+      presetIntensity: presetIntensity,
+      presetBlendMode: presetBlendMode,
+    );
+    final useCache = !isIntensityDrag;
+    final cached = useCache ? _previewCache[cacheKey] : null;
     if (cached != null) {
       if (mounted) {
-        setState(() {
-          _previewBytes = cached;
-          _buildingPreview = false;
-          _buildingHQ = false;
-        });
+        final allowFade = !_isDragging;
+        _presentPreviewBytes(
+          cached,
+          allowFade: allowFade,
+          requestId: ++_previewRequestId,
+        );
       }
       return;
     }
 
-    final existing = _previewFutures[cacheKey];
+    final existing = useCache ? _previewFutures[cacheKey] : null;
     if (existing != null) {
       try {
-        final jpg = await existing;
+        final result = await existing;
         if (!mounted) return;
         if (token != _renderToken) return;
-        setState(() {
-          _previewBytes = jpg;
-          _buildingPreview = false;
-          _buildingHQ = false;
-        });
+        final allowFade = !_isDragging;
+        _presentPreviewBytes(
+          result.bytes,
+          allowFade: allowFade,
+          requestId: result.requestId,
+        );
       } catch (_) {
-        if (!mounted) return;
+        if (!mounted || isDragLow) return;
         setState(() {
           _buildingPreview = false;
           _buildingHQ = false;
@@ -445,41 +851,63 @@ class _EditorPageState extends State<EditorPage> {
     }
 
     try {
+      final requestId = ++_previewRequestId;
+      final previewTier =
+          (_isDragging && quality == _PreviewQuality.low) ? 'drag' : 'final';
       final future = NativeRenderer.renderPreview(
         assetId: widget.assetId,
-        values: Map<String, double>.from(_values),
+        assetPath: _sampleImage?.assetPath,
+        values: Map<String, double>.from(valuesForRender),
         maxSide: maxSide,
         quality: q,
+        previewTier: previewTier,
+        requestId: requestId,
+        presetValues:
+            presetValuesForRender == null
+                ? null
+                : Map<String, double>.from(presetValuesForRender),
+        presetIntensity: presetIntensity,
+        presetBlendMode: presetBlendMode,
         rotationTurns: _rotateQuarterTurns,
         straightenDegrees: _straightenDegrees,
         cropRect: useCropRect ? _normalizedCropRect() : null,
       );
-      _previewFutures[cacheKey] = future;
-      final jpg = await future;
-      _previewCache[cacheKey] = jpg;
-      if (_previewCache.length > _previewCacheLimit) {
-        _previewCache.remove(_previewCache.keys.first);
+      if (useCache) {
+        _previewFutures[cacheKey] = future;
       }
-      _previewFutures.remove(cacheKey);
+      final result = await future;
+      final jpg = result.bytes;
+      if (useCache) {
+        _previewCache[cacheKey] = jpg;
+        if (_previewCache.length > _previewCacheLimit) {
+          _previewCache.remove(_previewCache.keys.first);
+        }
+        _previewFutures.remove(cacheKey);
+      }
 
       if (!mounted) return;
 
       if (token != _renderToken) {
-        setState(() {
-          _buildingPreview = false;
-          _buildingHQ = false;
-        });
+        if (!isDragLow) {
+          setState(() {
+            _buildingPreview = false;
+            _buildingHQ = false;
+          });
+        }
         return;
       }
 
-      setState(() {
-        _previewBytes = jpg;
-        _buildingPreview = false;
-        _buildingHQ = false;
-      });
+      final allowFade = !_isDragging;
+      _presentPreviewBytes(
+        jpg,
+        allowFade: allowFade,
+        requestId: result.requestId,
+      );
     } catch (_) {
-      _previewFutures.remove(cacheKey);
-      if (!mounted) return;
+      if (useCache) {
+        _previewFutures.remove(cacheKey);
+      }
+      if (!mounted || isDragLow) return;
       setState(() {
         _buildingPreview = false;
         _buildingHQ = false;
@@ -506,12 +934,32 @@ class _EditorPageState extends State<EditorPage> {
     return b.toString();
   }
 
-  String _previewKey(int maxSide, double quality, {required bool useCropRect}) {
+  String _previewKey(
+    Map<String, double> values,
+    int maxSide,
+    double quality, {
+    required bool useCropRect,
+    Map<String, double>? presetValues,
+    double? presetIntensity,
+    String? presetBlendMode,
+  }) {
     final rect = _normalizedCropRect();
     final b = StringBuffer();
     b.write(widget.assetId);
     b.write('|');
-    b.write(_presetSignature(_values));
+    b.write(_presetSignature(values));
+    if (presetValues != null) {
+      b.write('|p=');
+      b.write(_presetSignature(presetValues));
+    }
+    if (presetIntensity != null) {
+      b.write('|pi=');
+      b.write((presetIntensity * 1000).round());
+    }
+    if (presetBlendMode != null) {
+      b.write('|pb=');
+      b.write(presetBlendMode);
+    }
     b.write('|r=');
     b.write(_rotateQuarterTurns);
     b.write('|s=');
@@ -554,20 +1002,25 @@ class _EditorPageState extends State<EditorPage> {
     final merged = Map<String, double>.from(_defaultValues)
       ..addAll(presetValues);
 
-    final useCropRect = _activeGroup.label != 'Crop';
+    final useCropRect =
+        !_isCropMode &&
+        _normalizedCropRect() != const Rect.fromLTWH(0, 0, 1, 1);
     final fut =
         NativeRenderer.renderPreview(
               assetId: widget.assetId,
+              assetPath: _sampleImage?.assetPath,
               values: merged,
               maxSide: 520,
               quality: 0.74,
+              previewTier: 'final',
+              requestId: ++_previewRequestId,
               rotationTurns: _rotateQuarterTurns,
               straightenDegrees: _straightenDegrees,
               cropRect: useCropRect ? _normalizedCropRect() : null,
             )
-            .then((bytes) {
-              _presetPreviewCache[key] = bytes;
-              return bytes;
+            .then((result) {
+              _presetPreviewCache[key] = result.bytes;
+              return result.bytes;
             })
             .whenComplete(() {
               _presetPreviewFutures.remove(key);
@@ -593,7 +1046,6 @@ class _EditorPageState extends State<EditorPage> {
     _pushUndoCheckpoint();
     setState(() {
       _values[_activeTool.id] = _activeTool.defaultValue;
-      _activePresetName = null;
     });
     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
   }
@@ -1003,11 +1455,29 @@ class _EditorPageState extends State<EditorPage> {
     HapticFeedback.selectionClick();
     _pushUndoCheckpoint();
     setState(() {
-      for (final e in preset.values.entries) {
-        _values[e.key] = e.value;
-      }
+      _activePresetId = preset.id;
       _activePresetName = preset.name;
-      _tabIndex = 0;
+      _activePresetValues = Map<String, double>.from(preset.values);
+      _presetIntensityRaw = _defaultPresetIntensity;
+      _tabIndex = 1;
+      _presetStage = PresetStage.active;
+    });
+    _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Applied: ${preset.name}')));
+  }
+
+  void _applySavedPreset(_Preset preset) {
+    HapticFeedback.selectionClick();
+    _pushUndoCheckpoint();
+    setState(() {
+      _activePresetId = 'saved:${preset.name}';
+      _activePresetName = preset.name;
+      _activePresetValues = Map<String, double>.from(preset.values);
+      _presetIntensityRaw = _defaultPresetIntensity;
+      _tabIndex = 1;
+      _presetStage = PresetStage.active;
     });
     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
     ScaffoldMessenger.of(
@@ -1060,7 +1530,6 @@ class _EditorPageState extends State<EditorPage> {
       _values['vibrance'] = 0.12;
       _values['highlights'] = -0.10;
       _values['shadows'] = 0.12;
-      _activePresetName = null;
     });
 
     _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
@@ -1095,9 +1564,11 @@ class _EditorPageState extends State<EditorPage> {
     }
 
     try {
+      final effectiveValues = _effectiveValues();
       await NativeRenderer.exportFullRes(
         assetId: widget.assetId,
-        values: Map<String, double>.from(_values),
+        assetPath: _sampleImage?.assetPath,
+        values: Map<String, double>.from(effectiveValues),
         quality: 0.92,
         cropAspect: _cropAspect,
         rotationTurns: _rotateQuarterTurns,
@@ -1187,6 +1658,8 @@ class _EditorPageState extends State<EditorPage> {
 
     final tool = _activeTool;
     final toolValue = _v(tool.id);
+    final favorites = ref.watch(favoritesProvider);
+    final isFavorite = favorites.contains(widget.assetId);
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.light.copyWith(
@@ -1271,6 +1744,20 @@ class _EditorPageState extends State<EditorPage> {
                             ),
                           ),
                         ),
+                        IconButton(
+                          onPressed: () {
+                            ref
+                                .read(favoritesProvider.notifier)
+                                .toggleFavorite(widget.assetId);
+                          },
+                          icon: Icon(
+                            isFavorite
+                                ? Icons.favorite
+                                : Icons.favorite_border,
+                          ),
+                          color:
+                              isFavorite ? const Color(0xFFE87A7A) : _muted,
+                        ),
                       ],
                     ),
                     Divider(height: 10, color: _ink.withAlpha(24)),
@@ -1287,8 +1774,7 @@ class _EditorPageState extends State<EditorPage> {
                     ),
                     child: LayoutBuilder(
                       builder: (context, constraints) {
-                        final isCropGroup = _activeGroup.label == 'Crop';
-                        final previewAspect = isCropGroup
+                        final previewAspect = _isCropMode
                             ? _imageAspect
                             : _croppedAspect;
                         final maxWidth = constraints.maxWidth;
@@ -1301,8 +1787,17 @@ class _EditorPageState extends State<EditorPage> {
                         );
                         final height = width / previewAspect;
                         final displayBox = Offset.zero & Size(width, height);
-
-                        final bytesToShow = _previewBytes ?? _originalBytes!;
+                        final showOriginal =
+                            _showOriginalHold || _showOriginalToggle;
+                        final originalProvider =
+                            _originalBytes != null
+                                ? MemoryImage(_originalBytes!)
+                                : null;
+                        final frontProvider =
+                            showOriginal
+                                ? originalProvider
+                                : (_frontPreview ?? originalProvider);
+                        final backProvider = showOriginal ? null : _backPreview;
 
                         return Container(
                           width: width,
@@ -1324,22 +1819,39 @@ class _EditorPageState extends State<EditorPage> {
                                 Positioned.fromRect(
                                   rect: displayBox,
                                   child: ClipRect(
-                                    child: AnimatedSwitcher(
-                                      duration: const Duration(
-                                        milliseconds: 180,
-                                      ),
-                                      switchInCurve: Curves.easeOut,
-                                      switchOutCurve: Curves.easeIn,
-                                      child: Image.memory(
-                                        bytesToShow,
-                                        key: ValueKey(bytesToShow),
-                                        fit: BoxFit.cover,
-                                        gaplessPlayback: true,
-                                      ),
+                                    child: Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        if (frontProvider != null)
+                                          Image(
+                                            image: frontProvider,
+                                            fit: BoxFit.cover,
+                                            gaplessPlayback: true,
+                                          ),
+                                        if (backProvider != null)
+                                          AnimatedOpacity(
+                                            opacity: _showBackPreview
+                                                ? 1.0
+                                                : 0.0,
+                                            duration: _previewFadeDuration,
+                                            curve: Curves.easeOut,
+                                            onEnd: () {
+                                              if (_showBackPreview &&
+                                                  _backPreview != null) {
+                                                _promoteBackPreview();
+                                              }
+                                            },
+                                            child: Image(
+                                              image: backProvider,
+                                              fit: BoxFit.cover,
+                                              gaplessPlayback: true,
+                                            ),
+                                          ),
+                                      ],
                                     ),
                                   ),
                                 ),
-                                if (isCropGroup)
+                                if (_isCropMode)
                                   Positioned.fromRect(
                                     rect: displayBox,
                                     child: GestureDetector(
@@ -1381,6 +1893,44 @@ class _EditorPageState extends State<EditorPage> {
                                       ),
                                     ),
                                   ),
+                                Positioned(
+                                  left: 10,
+                                  top: 10,
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      setState(() {
+                                        _showOriginalToggle =
+                                            !_showOriginalToggle;
+                                      });
+                                    },
+                                    onLongPressStart: (_) {
+                                      setState(() {
+                                        _showOriginalHold = true;
+                                      });
+                                    },
+                                    onLongPressEnd: (_) {
+                                      setState(() {
+                                        _showOriginalHold = false;
+                                      });
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: _panelHighlight.withAlpha(
+                                          (0.78 * 255).round(),
+                                        ),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Icon(
+                                        _showOriginalToggle || _showOriginalHold
+                                            ? Icons.visibility
+                                            : Icons.compare,
+                                        size: 18,
+                                        color: _ink,
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -1499,167 +2049,145 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Widget _buildEditTab(_ToolItem tool, double toolValue) {
-    final isCropGroup = _activeGroup.label == 'Crop';
-
     return ListView(
       padding: const EdgeInsets.only(bottom: 18),
       children: [
-        if (isCropGroup) ...[
-          const SizedBox(height: 4),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(child: _buildAdjustmentPickerPill()),
+              const SizedBox(width: 10),
+              _buildCropEntryButton(),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        if (_isCropMode) ...[
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: _CropAspectSelector(
               current: _cropAspect,
               isFreeform: _isFreeformCrop,
               onSelect: _setCropOption,
-              activeColor: _accent,
+              activeColor: _panelHighlight,
               inactiveColor: _panel,
               activeTextColor: _ink,
               inactiveTextColor: _muted,
             ),
           ),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                TextButton(
+                  onPressed: _cancelCropMode,
+                  style: TextButton.styleFrom(foregroundColor: _muted),
+                  child: const Text('Cancel'),
+                ),
+                const Spacer(),
+                TextButton(
+                  onPressed: _exitCropMode,
+                  style: TextButton.styleFrom(foregroundColor: _muted),
+                  child: const Text('Done'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                OutlinedButton(
+                  onPressed: _rotate90,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _ink,
+                    backgroundColor: _panel,
+                    side: BorderSide(color: _ink.withAlpha(22)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text('Rotate 90'),
+                ),
+                const Spacer(),
+                Text(
+                  'Drag to crop',
+                  style: TextStyle(fontSize: 11, color: _muted),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Text(
+                  _toolsById['straighten']?.label ?? 'Straighten',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.4,
+                    color: _ink,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${_displayNumber(_toolsById['straighten']!)}',
+                  style: TextStyle(fontSize: 12, color: _muted),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _buildToolControl(
+              _toolsById['straighten']!,
+              _v('straighten'),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ] else if (!_isCropMode) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Text(
+                  tool.label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.4,
+                    color: _ink,
+                  ),
+                ),
+                const Spacer(),
+                if (tool.kind == ToolKind.slider)
+                  Text(
+                    '${_displayNumber(tool)}',
+                    style: TextStyle(fontSize: 12, color: _muted),
+                  )
+                else if (tool.kind == ToolKind.toggle)
+                  Text(
+                    _v(tool.id) >= 0.5 ? 'On' : 'Off',
+                    style: TextStyle(fontSize: 12, color: _muted),
+                  )
+                else
+                  const SizedBox.shrink(),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _buildToolControl(tool, toolValue),
+          ),
           const SizedBox(height: 10),
         ],
-        SizedBox(
-          height: 24,
-          child: ListView.separated(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            scrollDirection: Axis.horizontal,
-            itemBuilder: (context, i) {
-              final selected = i == _groupIndex;
-              return GestureDetector(
-                onTap: () {
-                  setState(() {
-                    _groupIndex = i;
-                    _toolIndex = 0;
-                  });
-                  _schedulePreviewRebuild(
-                    _PreviewQuality.high,
-                    immediate: true,
-                  );
-                },
-                child: Text(
-                  _groups[i].label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    letterSpacing: 0.4,
-                    color: selected ? _ink : _muted,
-                  ),
-                ),
-              );
-            },
-            separatorBuilder: (_, _) => const SizedBox(width: 16),
-            itemCount: _groups.length,
-          ),
-        ),
-        const SizedBox(height: 10),
-        SizedBox(
-          height: 34,
-          child: ListView.separated(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            scrollDirection: Axis.horizontal,
-            itemBuilder: (context, i) {
-              final selected = i == _toolIndex;
-              final t = _activeGroup.tools[i];
-
-              return GestureDetector(
-                onTap: () {
-                  setState(() => _toolIndex = i);
-
-                  if (t.kind == ToolKind.action) {
-                    if (t.id == 'auto') _applyAuto();
-                    if (t.id == 'rotate_90') _rotate90();
-                    return;
-                  }
-
-                  if (t.kind == ToolKind.toggle) {
-                    HapticFeedback.selectionClick();
-                    _pushUndoCheckpoint();
-                    setState(() {
-                      final cur = _v(t.id);
-                      _values[t.id] = (cur >= 0.5) ? 0.0 : 1.0;
-                      _activePresetName = null;
-                    });
-                    _schedulePreviewRebuild(
-                      _PreviewQuality.high,
-                      immediate: true,
-                    );
-                  }
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  alignment: Alignment.center,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        t.label,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: selected
-                              ? FontWeight.w700
-                              : FontWeight.w500,
-                          letterSpacing: 0.3,
-                          color: selected ? _ink : _muted,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        curve: Curves.easeOut,
-                        height: 2,
-                        width: selected ? 18 : 0,
-                        decoration: BoxDecoration(
-                          color: _accent,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-            separatorBuilder: (_, _) => const SizedBox(width: 14),
-            itemCount: _activeGroup.tools.length,
-          ),
-        ),
-        const SizedBox(height: 12),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
-              Text(
-                tool.label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.4,
-                  color: _ink,
-                ),
-              ),
-              const Spacer(),
-              if (tool.kind == ToolKind.slider)
-                Text(
-                  '${_displayNumber(tool)}',
-                  style: TextStyle(fontSize: 12, color: _muted),
-                )
-              else if (tool.kind == ToolKind.toggle)
-                Text(
-                  _v(tool.id) >= 0.5 ? 'On' : 'Off',
-                  style: TextStyle(fontSize: 12, color: _muted),
-                )
-              else
-                const SizedBox.shrink(),
-            ],
-          ),
-        ),
-        const SizedBox(height: 8),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: _buildToolControl(tool, toolValue),
-        ),
-        const SizedBox(height: 10),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
@@ -1679,6 +2207,448 @@ class _EditorPageState extends State<EditorPage> {
         ),
       ],
     );
+  }
+
+  Widget _buildAdjustmentPickerPill() {
+    return GestureDetector(
+      onTap: _showAdjustmentPicker,
+      child: Container(
+        key: _adjustmentPillKey,
+        height: 44,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(
+          color: _panelHighlight.withAlpha((0.6 * 255).round()),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Row(
+          children: [
+            Text(
+              _isCropMode ? 'Crop' : _activeTool.label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+                color: _ink.withAlpha((0.85 * 255).round()),
+              ),
+            ),
+            const Spacer(),
+            Icon(Icons.expand_more, size: 18, color: _muted),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCropEntryButton() {
+    return GestureDetector(
+      onTap: _enterCropMode,
+      child: Container(
+        height: 44,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: _panel,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: _ink.withAlpha(20)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.crop, size: 16, color: _muted),
+            const SizedBox(width: 6),
+            Text(
+              'Crop',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+                color: _ink.withAlpha((0.8 * 255).round()),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _enterCropMode() {
+    if (_isCropMode) return;
+    final cropIndex = _allAdjustmentIds.indexOf('straighten');
+    if (cropIndex < 0) return;
+    setState(() {
+      _cropSnapshot ??= _CropSnapshot(
+        cropAspect: _cropAspect,
+        isFreeform: _isFreeformCrop,
+        cropCenter: _cropCenter,
+        cropScale: _cropScale,
+        freeformCropRect: _freeformCropRect,
+        rotateQuarterTurns: _rotateQuarterTurns,
+      );
+      _preCropToolIndex = _toolIndex;
+      _toolIndex = cropIndex;
+      _isCropMode = true;
+    });
+  }
+
+  void _exitCropMode() {
+    if (!_isCropMode) return;
+    setState(() {
+      _isCropMode = false;
+      if (_preCropToolIndex != null) {
+        _toolIndex = _preCropToolIndex!;
+      }
+      _preCropToolIndex = null;
+      _cropSnapshot = null;
+    });
+    _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+  }
+
+  void _cancelCropMode() {
+    if (!_isCropMode) return;
+    final snapshot = _cropSnapshot;
+    setState(() {
+      if (snapshot != null) {
+        _cropAspect = snapshot.cropAspect;
+        _isFreeformCrop = snapshot.isFreeform;
+        _cropCenter = snapshot.cropCenter;
+        _cropScale = snapshot.cropScale;
+        _freeformCropRect = snapshot.freeformCropRect;
+        _rotateQuarterTurns = snapshot.rotateQuarterTurns;
+      }
+      _isCropMode = false;
+      if (_preCropToolIndex != null) {
+        _toolIndex = _preCropToolIndex!;
+      }
+      _preCropToolIndex = null;
+      _cropSnapshot = null;
+    });
+    _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+  }
+
+  void _setActiveToolId(String id) {
+    final nextIndex = _allAdjustmentIds.indexOf(id);
+    if (nextIndex < 0) return;
+    setState(() {
+      _toolIndex = nextIndex;
+      _isCropMode = false;
+      _preCropToolIndex = null;
+    });
+  }
+
+  Future<void> _showAdjustmentPicker() {
+    final baseColor = const Color(0xFF0B0B0B);
+    final surfaceOpacity = 0.82;
+    final selectedOpacity = 0.08;
+    final blurSigma = 12.0;
+    final primaryText = Colors.white.withValues(alpha: 0.9);
+    final secondaryText = Colors.white.withValues(alpha: 0.6);
+    final sectionText = Colors.white.withValues(alpha: 0.45);
+
+    final box =
+        _adjustmentPillKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return Future.value();
+    final pillTopLeft = box.localToGlobal(Offset.zero);
+    final pillRect = pillTopLeft & box.size;
+    final media = MediaQuery.of(context);
+    final screen = media.size;
+    const sidePadding = 12.0;
+    const gap = 10.0;
+    const rowHeight = 48.0;
+    const rowGap = 4.0;
+    const headerHeight = 22.0;
+    final quickCount = _quickAdjustments.length;
+    final quickHeight =
+        quickCount * rowHeight + (math.max(quickCount - 1, 0) * rowGap);
+    final menuHeight = 10 + headerHeight + 8 + quickHeight + 4 + rowHeight + 10;
+    final width = box.size.width.clamp(260.0, 320.0);
+    final left = (pillRect.center.dx - width / 2).clamp(
+      sidePadding,
+      screen.width - sidePadding - width,
+    );
+
+    final availableAbove = pillRect.top - gap - media.padding.top;
+    final availableBelow =
+        screen.height - pillRect.bottom - gap - media.padding.bottom;
+    final openAbove =
+        availableAbove >= menuHeight || availableAbove > availableBelow;
+    final top = openAbove
+        ? (pillRect.top - gap - menuHeight).clamp(
+            media.padding.top + sidePadding,
+            screen.height - media.padding.bottom - menuHeight,
+          )
+        : (pillRect.bottom + gap).clamp(
+            media.padding.top + sidePadding,
+            screen.height - media.padding.bottom - menuHeight,
+          );
+
+    return showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Dismiss',
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 120),
+      pageBuilder: (context, _, _) {
+        return Stack(
+          children: [
+            Positioned(
+              left: left,
+              top: top,
+              width: width,
+              child: Material(
+                color: Colors.transparent,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(
+                      sigmaX: blurSigma,
+                      sigmaY: blurSigma,
+                    ),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: baseColor.withValues(alpha: surfaceOpacity),
+                        borderRadius: BorderRadius.circular(18),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.25),
+                            blurRadius: 28,
+                            offset: const Offset(0, 10),
+                          ),
+                        ],
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                'Quick',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  letterSpacing: 0.6,
+                                  color: sectionText,
+                                ),
+                              ),
+                            ),
+                          ),
+                          for (final tool in _quickAdjustments) ...[
+                            _buildAdjustmentRow(
+                              tool,
+                              highlightColor: baseColor.withValues(
+                                alpha: selectedOpacity,
+                              ),
+                              primaryText: primaryText,
+                              secondaryText: secondaryText,
+                            ),
+                            const SizedBox(height: rowGap),
+                          ],
+                          const SizedBox(height: 4),
+                          _buildAllToolsRow(
+                            highlightColor: baseColor.withValues(
+                              alpha: selectedOpacity,
+                            ),
+                            primaryText: primaryText,
+                            secondaryText: secondaryText,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+      transitionBuilder: (context, animation, _, child) {
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOut,
+        );
+        return FadeTransition(
+          opacity: curved,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.98, end: 1.0).animate(curved),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAdjustmentRow(
+    _ToolItem tool, {
+    required Color highlightColor,
+    required Color primaryText,
+    required Color secondaryText,
+  }) {
+    final isSelected = tool.id == _activeAdjustmentId;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        _setActiveToolId(tool.id);
+        Navigator.of(context).pop();
+      },
+      child: Container(
+        height: 48,
+        margin: const EdgeInsets.symmetric(horizontal: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: isSelected ? highlightColor : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            Text(
+              tool.label,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                letterSpacing: 0.2,
+                color: primaryText,
+              ),
+            ),
+            const Spacer(),
+            if (tool.kind == ToolKind.slider)
+              Text(
+                '${_displayNumber(tool)}',
+                style: TextStyle(fontSize: 12, color: secondaryText),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAllToolsRow({
+    required Color highlightColor,
+    required Color primaryText,
+    required Color secondaryText,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        Navigator.of(context).pop();
+        Future.microtask(_showAllToolsPicker);
+      },
+      child: Container(
+        height: 48,
+        margin: const EdgeInsets.symmetric(horizontal: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            Text(
+              'All tools',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+                color: primaryText,
+              ),
+            ),
+            const Spacer(),
+            Text(
+              '${_allAdjustmentTools.length}',
+              style: TextStyle(fontSize: 12, color: secondaryText),
+            ),
+            const SizedBox(width: 6),
+            Icon(Icons.chevron_right, size: 18, color: secondaryText),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showAllToolsPicker() {
+    final primaryText = Colors.white.withValues(alpha: 0.9);
+    final secondaryText = Colors.white.withValues(alpha: 0.6);
+    final sectionText = Colors.white.withValues(alpha: 0.45);
+    final highlightColor = Colors.white.withValues(alpha: 0.08);
+
+    return Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (context) {
+          return Scaffold(
+            backgroundColor: _canvas,
+            body: SafeArea(
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+                    child: Row(
+                      children: [
+                        Text(
+                          'All tools',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.2,
+                            color: primaryText,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          icon: Icon(Icons.close, color: secondaryText),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                      children: [
+                        for (final group in _groups)
+                          if (group.label != 'Crop') ...[
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+                              child: Text(
+                                group.label,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  letterSpacing: 0.6,
+                                  color: sectionText,
+                                ),
+                              ),
+                            ),
+                            for (final tool in group.tools) ...[
+                              _buildAdjustmentRow(
+                                tool,
+                                highlightColor: highlightColor,
+                                primaryText: primaryText,
+                                secondaryText: secondaryText,
+                              ),
+                              const SizedBox(height: 4),
+                            ],
+                          ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _applySliderValue(String id, double value, _PreviewQuality quality) {
+    _values[id] = value;
+    _schedulePreviewRebuild(quality, immediate: true);
+  }
+
+  void _applyPresetIntensity(double value, _PreviewQuality quality) {
+    setState(() {
+      _presetIntensityRaw = value.clamp(0.0, 1.0);
+    });
+    _schedulePreviewRebuild(quality, immediate: true);
   }
 
   Widget _buildToolControl(_ToolItem tool, double toolValue) {
@@ -1721,7 +2691,6 @@ class _EditorPageState extends State<EditorPage> {
             _pushUndoCheckpoint();
             setState(() {
               _values[tool.id] = isOn ? 0.0 : 1.0;
-              _activePresetName = null;
             });
             _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
           },
@@ -1753,65 +2722,268 @@ class _EditorPageState extends State<EditorPage> {
           thumbColor: _accent,
           overlayColor: _accent.withAlpha((0.10 * 255).round()),
         ),
-        child: Slider(
+        child: _LiveSlider(
           value: toolValue,
           min: tool.min,
           max: tool.max,
-          onChangeStart: (_) {
+          onChangeStart: () {
+            _isDragging = true;
+            _dragToolId = tool.id;
+            _dragPreviewThrottler.cancel();
+            _clearPendingDragRequest();
             _pushUndoCheckpoint();
-            _dragDebounce?.cancel();
           },
           onChanged: (v) {
-            setState(() {
-              _values[tool.id] = v;
-              _activePresetName = null;
-            });
-
-            _dragDebounce?.cancel();
-            _dragDebounce = Timer(const Duration(milliseconds: 120), () {
+            _dragPreviewThrottler.schedule(() {
               if (!mounted) return;
-              _schedulePreviewRebuild(_PreviewQuality.low, immediate: true);
+              _requestDragPreviewRender(tool.id, v);
             });
           },
-          onChangeEnd: (_) {
-            _dragDebounce?.cancel();
-            _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+          onChangeEnd: (v) {
+            _isDragging = false;
+            _dragToolId = null;
+            _dragPreviewThrottler.cancel();
+            _clearPendingDragRequest();
+            _applySliderValue(tool.id, v, _PreviewQuality.high);
           },
         ),
       ),
     );
   }
 
-  Widget _buildPresetsTab() {
+  Widget _buildPresetIntensityControl() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Intensity',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.3,
+            color: _muted,
+          ),
+        ),
+        const SizedBox(height: 6),
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            activeTrackColor: _accent,
+            inactiveTrackColor: _panelHighlight,
+            thumbColor: _accent,
+            overlayColor: _accent.withAlpha((0.10 * 255).round()),
+          ),
+          child: _LiveSlider(
+            value: _presetIntensityRaw,
+            min: 0,
+            max: 1,
+            onChangeStart: () {
+              _isDragging = true;
+              _dragToolId = _presetIntensityToolId;
+              _dragPreviewThrottler.cancel();
+              _clearPendingDragRequest();
+              _pushUndoCheckpoint();
+            },
+            onChanged: (v) {
+              _dragPreviewThrottler.schedule(() {
+                if (!mounted) return;
+                _requestDragPreviewRender(_presetIntensityToolId, v);
+              });
+            },
+            onChangeEnd: (v) {
+              _isDragging = false;
+              _dragToolId = null;
+              _dragPreviewThrottler.cancel();
+              _clearPendingDragRequest();
+              _applyPresetIntensity(v, _PreviewQuality.high);
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  PresetCategory? _categoryForId(String id) {
+    for (final category in PresetUi.categories) {
+      if (category.id == id) return category;
+    }
+    return null;
+  }
+
+  Widget _buildPresetCategoryTile({
+    required String title,
+    required String subtitle,
+    required int count,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Ink(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: _panel,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: _panelHighlight),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.4,
+                        color: _ink,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: TextStyle(fontSize: 12, color: _muted),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                '$count',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: _muted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPresetCategoriesView() {
+    final groups = PresetUi.groupedPresets();
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      children: [
+        Text(
+          'Categories',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.6,
+            color: _muted,
+          ),
+        ),
+        const SizedBox(height: 10),
+        for (final group in groups) ...[
+          _buildPresetCategoryTile(
+            title: group.category.name,
+            subtitle: group.category.description,
+            count: group.presets.length,
+            onTap: () => _selectPresetCategory(group.category.id),
+          ),
+          const SizedBox(height: 10),
+        ],
+        if (_presets.isNotEmpty) ...[
+          _buildPresetCategoryTile(
+            title: 'Saved',
+            subtitle: 'Your custom presets.',
+            count: _presets.length,
+            onTap: () => _selectPresetCategory(_savedCategoryId),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildPresetListView() {
+    final selectedId = _selectedCategoryId;
+    if (selectedId == null) return _buildPresetCategoriesView();
+
+    final isSaved = selectedId == _savedCategoryId;
+    final category = isSaved ? null : _categoryForId(selectedId);
+    if (!isSaved && category == null) return _buildPresetCategoriesView();
+
+    final title = isSaved ? 'Saved' : category!.name;
+    final subtitle = isSaved ? 'Your custom presets.' : category!.description;
     final fallbackBytes = _previewBytes ?? _originalBytes!;
+    final presets =
+        isSaved ? const <LumaPreset>[] : PresetUi.presetsForCategory(selectedId);
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 18),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
-        for (final pack in PresetRegistry.packs) ...[
-          Text(
-            pack.name,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.6,
-              color: _ink,
+        Row(
+          children: [
+            IconButton(
+              onPressed: () {
+                setState(() => _presetStage = PresetStage.categories);
+              },
+              icon: Icon(Icons.arrow_back, color: _muted),
+              splashRadius: 18,
             ),
+            const SizedBox(width: 4),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.4,
+                color: _ink,
+              ),
+            ),
+          ],
+        ),
+        if (subtitle.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(left: 48, right: 8, bottom: 8),
+            child: Text(subtitle, style: TextStyle(fontSize: 12, color: _muted)),
           ),
-          const SizedBox(height: 4),
-          Text(pack.description, style: TextStyle(fontSize: 12, color: _muted)),
-          const SizedBox(height: 10),
+        const SizedBox(height: 8),
+        if (isSaved) ...[
+          if (_presets.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 20),
+              child: Text(
+                'No presets yet.\nSave one from the Edit tab.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: _muted),
+              ),
+            )
+          else
+            ..._presets.map((p) {
+              final selected = _activePresetId == 'saved:${p.name}';
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _PresetCard(
+                  preset: p,
+                  selected: selected,
+                  ink: _ink,
+                  muted: _muted,
+                  panel: _panel,
+                  panelHighlight: _panelHighlight,
+                  accent: _accent,
+                  onApply: () => _selectSavedPreset(p),
+                ),
+              );
+            }),
+        ] else ...[
           SizedBox(
             height: 170,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              itemCount: pack.presetIds.length,
+              itemCount: presets.length,
               separatorBuilder: (_, _) => const SizedBox(width: 12),
               itemBuilder: (context, i) {
-                final p = PresetRegistry.byId(pack.presetIds[i]);
+                final p = presets[i];
                 return _RegistryPresetTile(
                   preset: p,
-                  selected: _activePresetName == p.name,
+                  selected: _activePresetId == p.id,
                   accent: _accent,
                   ink: _ink,
                   muted: _muted,
@@ -1819,72 +2991,104 @@ class _EditorPageState extends State<EditorPage> {
                   panelHighlight: _panelHighlight,
                   fallbackBytes: fallbackBytes,
                   previewFuture: _getPresetPreviewBytes(p.name, p.values),
-                  onApply: () => _applyRegistryPreset(p),
+                  onApply: () => _selectRegistryPreset(p),
                 );
               },
             ),
           ),
-          const SizedBox(height: 18),
         ],
-        Divider(height: 1, color: _ink.withAlpha(18)),
-        const SizedBox(height: 14),
-        Row(
-          children: [
-            Text(
-              'Saved',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.6,
-                color: _muted,
-              ),
-            ),
-            const Spacer(),
-            Text(
-              'Saved: ${_presets.length}',
-              style: TextStyle(fontSize: 11, color: _muted),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        if (_presets.isEmpty)
-          const Padding(
-            padding: EdgeInsets.only(top: 20),
-            child: Text(
-              'No presets yet.\nSave one from the Edit tab.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: _muted),
-            ),
-          )
-        else
-          ..._presets.map(
-            (p) => _PresetCard(
-              preset: p,
-              selected: _activePresetName == p.name,
-              ink: _ink,
-              muted: _muted,
-              panel: _panel,
-              panelHighlight: _panelHighlight,
-              accent: _accent,
-              onApply: () {
-                HapticFeedback.selectionClick();
-                _pushUndoCheckpoint();
-                setState(() {
-                  _values
-                    ..clear()
-                    ..addAll(p.values);
-                  _activePresetName = p.name;
-                  _tabIndex = 0;
-                });
-                _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text('Applied: ${p.name}')));
-              },
-            ),
-          ),
       ],
     );
+  }
+
+  Widget _buildPresetActiveView() {
+    final name = _activePresetName ?? 'Preset';
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SizedBox(
+          height: constraints.maxHeight,
+          child: Column(
+            children: [
+              const Spacer(),
+              Container(
+                margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                decoration: BoxDecoration(
+                  color: _panel,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: _panelHighlight),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.3,
+                        color: _ink,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    _buildPresetIntensityControl(),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: _cancelPresetSelection,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: _muted,
+                              side: BorderSide(color: _panelHighlight),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text('Cancel'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: _finishPresetSelection,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: _accent,
+                              foregroundColor: _canvas,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text('Done'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPresetsTab() {
+    final stage =
+        (_presetStage == PresetStage.active && _activePresetValues == null)
+            ? PresetStage.categories
+            : _presetStage;
+
+    switch (stage) {
+      case PresetStage.categories:
+        return _buildPresetCategoriesView();
+      case PresetStage.list:
+        return _buildPresetListView();
+      case PresetStage.active:
+        return _buildPresetActiveView();
+    }
   }
 }
 
@@ -2069,6 +3273,128 @@ class _ToolItem {
   });
 }
 
+class _LiveSlider extends StatefulWidget {
+  const _LiveSlider({
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChangeStart,
+    required this.onChanged,
+    required this.onChangeEnd,
+  });
+
+  final double value;
+  final double min;
+  final double max;
+  final VoidCallback onChangeStart;
+  final ValueChanged<double> onChanged;
+  final ValueChanged<double> onChangeEnd;
+
+  @override
+  State<_LiveSlider> createState() => _LiveSliderState();
+}
+
+class _LiveSliderState extends State<_LiveSlider> {
+  late double _dragValue;
+  bool _dragging = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _dragValue = widget.value;
+  }
+
+  @override
+  void didUpdateWidget(covariant _LiveSlider oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_dragging) {
+      _dragValue = widget.value;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = _dragValue.clamp(widget.min, widget.max);
+    return Slider(
+      value: value,
+      min: widget.min,
+      max: widget.max,
+      onChangeStart: (_) {
+        setState(() => _dragging = true);
+        widget.onChangeStart();
+      },
+      onChanged: (v) {
+        setState(() => _dragValue = v);
+        widget.onChanged(v);
+      },
+      onChangeEnd: (v) {
+        setState(() {
+          _dragValue = v;
+          _dragging = false;
+        });
+        widget.onChangeEnd(v);
+      },
+    );
+  }
+}
+
+class _Throttler {
+  _Throttler({required this.interval});
+
+  final Duration interval;
+  Timer? _timer;
+  VoidCallback? _pending;
+
+  void schedule(VoidCallback fn) {
+    _pending = fn;
+    if (_timer?.isActive ?? false) return;
+    _timer = Timer(interval, _run);
+  }
+
+  void _run() {
+    final pending = _pending;
+    _pending = null;
+    _timer = null;
+    if (pending != null) {
+      pending();
+    }
+  }
+
+  void flush() {
+    _timer?.cancel();
+    _timer = null;
+    final pending = _pending;
+    _pending = null;
+    if (pending != null) {
+      pending();
+    }
+  }
+
+  void cancel() {
+    _timer?.cancel();
+    _timer = null;
+    _pending = null;
+  }
+
+  void dispose() {
+    cancel();
+  }
+}
+
+class _PresetSnapshot {
+  final _HistoryState state;
+  final PresetStage stage;
+  final String? selectedCategoryId;
+  final String? activePresetId;
+
+  const _PresetSnapshot({
+    required this.state,
+    required this.stage,
+    required this.selectedCategoryId,
+    required this.activePresetId,
+  });
+}
+
 class _HistoryState {
   final Map<String, double> values;
   final int tabIndex;
@@ -2082,6 +3408,9 @@ class _HistoryState {
   final bool isFreeformCrop;
   final Rect freeformCropRect;
   final String? activePresetName;
+  final Map<String, double>? activePresetValues;
+  final String? activePresetId;
+  final double presetIntensityRaw;
 
   const _HistoryState({
     required this.values,
@@ -2096,6 +3425,27 @@ class _HistoryState {
     required this.isFreeformCrop,
     required this.freeformCropRect,
     required this.activePresetName,
+    required this.activePresetValues,
+    required this.activePresetId,
+    required this.presetIntensityRaw,
+  });
+}
+
+class _CropSnapshot {
+  final double? cropAspect;
+  final bool isFreeform;
+  final Offset cropCenter;
+  final double cropScale;
+  final Rect freeformCropRect;
+  final int rotateQuarterTurns;
+
+  const _CropSnapshot({
+    required this.cropAspect,
+    required this.isFreeform,
+    required this.cropCenter,
+    required this.cropScale,
+    required this.freeformCropRect,
+    required this.rotateQuarterTurns,
   });
 }
 

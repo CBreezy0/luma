@@ -1,34 +1,28 @@
-import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../editor/editor_page.dart';
+import '../favorites/favorites_provider.dart';
+import 'gallery_controller.dart';
+import 'gallery_models.dart';
 
-class GalleryPage extends StatefulWidget {
+class GalleryPage extends ConsumerStatefulWidget {
   const GalleryPage({super.key});
 
   @override
-  State<GalleryPage> createState() => _GalleryPageState();
+  ConsumerState<GalleryPage> createState() => _GalleryPageState();
 }
 
-class _GalleryPageState extends State<GalleryPage> {
-  bool _loading = true;
-  bool _denied = false;
-  Timer? _initDelay;
-
-  final List<AssetEntity> _assets = [];
+class _GalleryPageState extends ConsumerState<GalleryPage> {
+  final ScrollController _scrollController = ScrollController();
   final Map<String, Uint8List> _thumbCache = {};
   final Map<String, Future<Uint8List?>> _thumbFutures = {};
-  int _page = 0;
-  bool _isFetchingMore = false;
-  bool _hasMore = true;
-  AssetPathEntity? _album;
 
-  static const int _pageSize = 80;
-  static const ThumbnailSize _thumbSize = ThumbnailSize(360, 360);
   static const int _thumbCacheLimit = 240;
+  static const ThumbnailSize _thumbSize = ThumbnailSize(360, 360);
   static const Color _canvas = Color(0xFFF6F3EF);
   static const Color _tile = Color(0xFFEDE7E1);
   static const Color _darkCanvas = Color(0xFF151515);
@@ -38,89 +32,24 @@ class _GalleryPageState extends State<GalleryPage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _initDelay?.cancel();
-      _initDelay = Timer(const Duration(milliseconds: 300), () {
-        if (!mounted) return;
-        _init();
-      });
-    });
-  }
-
-  Future<void> _init() async {
-    final perm = await PhotoManager.requestPermissionExtend();
-    if (!mounted) return;
-
-    if (!perm.isAuth) {
-      setState(() {
-        _loading = false;
-        _denied = true;
-      });
-      return;
-    }
-
-    await _loadMore(reset: true);
-    if (!mounted) return;
-
-    setState(() => _loading = false);
+    _scrollController.addListener(_handleScroll);
   }
 
   @override
   void dispose() {
-    _initDelay?.cancel();
+    _scrollController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadMore({bool reset = false}) async {
-    if (_isFetchingMore) return;
-    if (!_hasMore && !reset) return;
-
-    setState(() => _isFetchingMore = true);
-
-    try {
-      if (reset) {
-        _assets.clear();
-        _page = 0;
-        _hasMore = true;
-      }
-
-      if (_album == null) {
-        final paths = await PhotoManager.getAssetPathList(
-          type: RequestType.image,
-          hasAll: true,
-          onlyAll: true,
-        );
-
-        if (paths.isEmpty) {
-          _hasMore = false;
-          return;
-        }
-        _album = paths.first;
-      }
-
-      final pageAssets = await _album!.getAssetListPaged(
-        page: _page,
-        size: _pageSize,
-      );
-
-      _assets.addAll(pageAssets);
-      _page += 1;
-
-      if (pageAssets.length < _pageSize) {
-        _hasMore = false;
-      }
-
-      _primeThumbnails(pageAssets.take(36).toList());
-    } finally {
-      if (mounted) {
-        setState(() => _isFetchingMore = false);
-      }
+  void _handleScroll() {
+    if (!_scrollController.hasClients) return;
+    if (_scrollController.position.pixels >=
+        _scrollController.position.maxScrollExtent - 600) {
+      ref.read(galleryControllerProvider.notifier).loadMore();
     }
   }
 
-  void _openEditor(AssetEntity asset) {
-    final id = asset.id;
+  void _openEditor(String id) {
     Navigator.of(context).push(
       PageRouteBuilder(
         transitionDuration: const Duration(milliseconds: 320),
@@ -178,73 +107,90 @@ class _GalleryPageState extends State<GalleryPage> {
     return future;
   }
 
-  void _primeThumbnails(List<AssetEntity> assets) {
-    for (final asset in assets) {
-      _getThumb(asset);
-    }
+  void _toggleFavorite(String id) {
+    ref.read(favoritesProvider.notifier).toggleFavorite(id);
+  }
+
+  void _openAlbumsSheet(GalleryState state) {
+    final albums = state.collections.albums;
+    if (albums.isEmpty) return;
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        return Container(
+          margin: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF1D1D1D) : Colors.white,
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: SafeArea(
+            top: false,
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: albums.length + 1,
+              separatorBuilder: (_, _) {
+                final dividerColor = isDark
+                    ? Colors.white.withValues(alpha: 0.06)
+                    : Colors.black.withValues(alpha: 0.06);
+                return Divider(height: 1, color: dividerColor);
+              },
+              itemBuilder: (context, i) {
+                if (i == 0) {
+                  return ListTile(
+                    title: const Text('Recents'),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      ref
+                          .read(galleryControllerProvider.notifier)
+                          .setFilter(const GalleryFilter.recents());
+                    },
+                  );
+                }
+                final album = albums[i - 1];
+                return ListTile(
+                  title: Text(album.name),
+                  trailing: Text(
+                    '${album.count}',
+                    style: TextStyle(
+                      color: isDark
+                          ? Colors.white.withValues(alpha: 0.6)
+                          : Colors.black.withValues(alpha: 0.6),
+                      fontSize: 12,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    ref.read(galleryControllerProvider.notifier).setFilter(
+                          GalleryFilter.album(
+                            id: album.id,
+                            name: album.name,
+                          ),
+                        );
+                  },
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final state = ref.watch(galleryControllerProvider);
+    final favorites = ref.watch(favoritesProvider);
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final canvas = isDark ? _darkCanvas : _canvas;
     final tile = isDark ? _darkTile : _tile;
     final titleColor = isDark ? const Color(0xFFEFEAE4) : Colors.black;
 
-    if (_loading) {
-      return Scaffold(backgroundColor: canvas, body: _GallerySkeleton(tile));
-    }
-
-    if (_denied) {
-      return Scaffold(
-        backgroundColor: canvas,
-        appBar: AppBar(
-          title: Text(
-            'Gallery',
-            style: TextStyle(
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0.4,
-              color: titleColor,
-            ),
-          ),
-          backgroundColor: canvas,
-          elevation: 0,
-        ),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'Photo access is off.\nTurn it on in Settings to pick photos.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF8B857C)),
-                ),
-                const SizedBox(height: 12),
-                ElevatedButton(
-                  onPressed: () => PhotoManager.openSetting(),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isDark
-                        ? const Color(0xFFEFEAE4)
-                        : const Color(0xFF151411),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 10,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text('Open Settings'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
+    final showPermissionEmpty =
+        state.permission == GalleryPermissionState.denied &&
+        state.filter.type != GalleryFilterType.samples;
 
     return Scaffold(
       backgroundColor: canvas,
@@ -259,51 +205,437 @@ class _GalleryPageState extends State<GalleryPage> {
         ),
         backgroundColor: canvas,
         elevation: 0,
-      ),
-      body: NotificationListener<ScrollNotification>(
-        onNotification: (n) {
-          if (n.metrics.pixels >= n.metrics.maxScrollExtent - 600) {
-            _loadMore();
-          }
-          return false;
-        },
-        child: GridView.builder(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-          cacheExtent: 800,
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3,
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 10,
+        actions: [
+          PopupMenuButton<GallerySort>(
+            initialValue: state.sort,
+            onSelected: (value) {
+              ref.read(galleryControllerProvider.notifier).setSort(value);
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: GallerySort.newest,
+                child: Text('Newest'),
+              ),
+              PopupMenuItem(
+                value: GallerySort.oldest,
+                child: Text('Oldest'),
+              ),
+              PopupMenuItem(
+                value: GallerySort.recentlyEdited,
+                child: Text('Recently edited'),
+              ),
+            ],
+            icon: Icon(Icons.swap_vert, color: titleColor),
           ),
-          itemCount: _assets.length,
-          itemBuilder: (context, i) {
-            final asset = _assets[i];
-            return GestureDetector(
-              onTap: () => _openEditor(asset),
-              child: FutureBuilder<Uint8List?>(
-                future: _getThumb(asset),
-                builder: (context, snapshot) {
-                  final bytes = snapshot.data;
-                  if (bytes == null) {
-                    return Container(
-                      decoration: BoxDecoration(
-                        color: tile,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    );
-                  }
-                  return ClipRRect(
-                    borderRadius: BorderRadius.circular(14),
-                    child: Image.memory(
-                      bytes,
-                      fit: BoxFit.cover,
-                      gaplessPlayback: true,
+        ],
+      ),
+      body: Column(
+        children: [
+          _FilterBar(
+            state: state,
+            onSelect: (filter) {
+              ref.read(galleryControllerProvider.notifier).setFilter(filter);
+            },
+            onAlbumsTap: () => _openAlbumsSheet(state),
+          ),
+          Expanded(
+            child: Builder(
+              builder: (context) {
+                if (state.isLoading && state.items.isEmpty) {
+                  return _GallerySkeleton(tile);
+                }
+
+                if (showPermissionEmpty) {
+                  return _PermissionEmptyState(
+                    onOpenSettings: () => PhotoManager.openSetting(),
+                    onTrySamples: () =>
+                        ref.read(galleryControllerProvider.notifier).showSamples(),
+                  );
+                }
+
+                if (state.filter.type == GalleryFilterType.favorites &&
+                    favorites.isEmpty) {
+                  return const _EmptyState(
+                    title: 'No favorites yet',
+                    subtitle: 'Tap the heart on any photo to save it here.',
+                  );
+                }
+
+                if (state.items.isEmpty) {
+                  return _EmptyState(
+                    title: 'No photos found',
+                    subtitle: 'Try another filter or sample photos.',
+                    action: TextButton(
+                      onPressed: () => ref
+                          .read(galleryControllerProvider.notifier)
+                          .showSamples(),
+                      child: const Text('Try Sample Photos'),
                     ),
                   );
-                },
+                }
+
+                return NotificationListener<ScrollNotification>(
+                  onNotification: (n) {
+                    if (n.metrics.pixels >=
+                        n.metrics.maxScrollExtent - 600) {
+                      ref.read(galleryControllerProvider.notifier).loadMore();
+                    }
+                    return false;
+                  },
+                  child: GridView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                    cacheExtent: 900,
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3,
+                      crossAxisSpacing: 10,
+                      mainAxisSpacing: 10,
+                    ),
+                    itemCount:
+                        state.items.length + (state.isLoadingMore ? 1 : 0),
+                    itemBuilder: (context, i) {
+                      if (i >= state.items.length) {
+                        return const Center(
+                          child: SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        );
+                      }
+                      final item = state.items[i];
+                      final isFavorite = favorites.contains(item.id);
+                      return GestureDetector(
+                        onTap: () => _openEditor(item.id),
+                        onLongPress: () => _toggleFavorite(item.id),
+                        child: Stack(
+                          children: [
+                            Positioned.fill(
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(14),
+                                child: _GalleryThumb(
+                                  item: item,
+                                  tile: tile,
+                                  getThumb: _getThumb,
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              top: 6,
+                              right: 6,
+                              child: GestureDetector(
+                                onTap: () => _toggleFavorite(item.id),
+                                child: Container(
+                                  padding: const EdgeInsets.all(4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.45),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Icon(
+                                    isFavorite
+                                        ? Icons.favorite
+                                        : Icons.favorite_border,
+                                    size: 16,
+                                    color: isFavorite
+                                        ? const Color(0xFFE87A7A)
+                                        : Colors.white.withValues(alpha: 0.85),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GalleryThumb extends StatelessWidget {
+  final GalleryItem item;
+  final Color tile;
+  final Future<Uint8List?> Function(AssetEntity asset) getThumb;
+
+  const _GalleryThumb({
+    required this.item,
+    required this.tile,
+    required this.getThumb,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (item.type == GalleryItemType.sample) {
+      final sample = item.sample;
+      if (sample == null) return const SizedBox.shrink();
+      return Image.asset(sample.assetPath, fit: BoxFit.cover);
+    }
+
+    final asset = item.asset;
+    if (asset == null) {
+      return Container(color: tile);
+    }
+
+    return FutureBuilder<Uint8List?>(
+      future: getThumb(asset),
+      builder: (context, snapshot) {
+        final bytes = snapshot.data;
+        if (bytes == null) {
+          return Container(color: tile);
+        }
+        return Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true);
+      },
+    );
+  }
+}
+
+class _FilterBar extends StatelessWidget {
+  final GalleryState state;
+  final ValueChanged<GalleryFilter> onSelect;
+  final VoidCallback onAlbumsTap;
+
+  const _FilterBar({
+    required this.state,
+    required this.onSelect,
+    required this.onAlbumsTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final activeColor =
+        isDark ? const Color(0xFFEFEAE4) : const Color(0xFF151515);
+    final inactiveColor = isDark
+        ? Colors.white.withValues(alpha: 0.5)
+        : Colors.black.withValues(alpha: 0.5);
+
+    final chips = <Widget>[
+      _FilterChipButton(
+        label: 'Recents',
+        selected: state.filter.type == GalleryFilterType.recents,
+        activeColor: activeColor,
+        inactiveColor: inactiveColor,
+        onTap: () => onSelect(const GalleryFilter.recents()),
+      ),
+      _FilterChipButton(
+        label: 'Favorites',
+        selected: state.filter.type == GalleryFilterType.favorites,
+        activeColor: activeColor,
+        inactiveColor: inactiveColor,
+        onTap: () => onSelect(const GalleryFilter.favorites()),
+      ),
+    ];
+
+    if (state.collections.screenshots != null) {
+      chips.add(
+        _FilterChipButton(
+          label: 'Screenshots',
+          selected: state.filter.type == GalleryFilterType.screenshots,
+          activeColor: activeColor,
+          inactiveColor: inactiveColor,
+          onTap: () => onSelect(const GalleryFilter.screenshots()),
+        ),
+      );
+    }
+
+    chips.add(
+      _FilterChipButton(
+        label: 'RAW',
+        selected: state.filter.type == GalleryFilterType.raw,
+        activeColor: activeColor,
+        inactiveColor: inactiveColor,
+        onTap: () => onSelect(const GalleryFilter.raw()),
+      ),
+    );
+
+    chips.add(
+      _FilterChipButton(
+        label: state.filter.type == GalleryFilterType.album
+            ? (state.filter.albumName ?? 'Album')
+            : 'Albums',
+        selected: state.filter.type == GalleryFilterType.album,
+        activeColor: activeColor,
+        inactiveColor: inactiveColor,
+        onTap: onAlbumsTap,
+      ),
+    );
+
+    if (state.filter.type == GalleryFilterType.samples) {
+      chips.add(
+        _FilterChipButton(
+          label: 'Samples',
+          selected: true,
+          activeColor: activeColor,
+          inactiveColor: inactiveColor,
+          onTap: () => onSelect(const GalleryFilter.samples()),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (final chip in chips) ...[
+              chip,
+              const SizedBox(width: 8),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FilterChipButton extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final Color activeColor;
+  final Color inactiveColor;
+  final VoidCallback onTap;
+
+  const _FilterChipButton({
+    required this.label,
+    required this.selected,
+    required this.activeColor,
+    required this.inactiveColor,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected
+              ? activeColor.withValues(alpha: 0.15)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: selected
+                ? activeColor.withValues(alpha: 0.5)
+                : inactiveColor.withValues(alpha: 0.3),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.2,
+            color: selected ? activeColor : inactiveColor,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PermissionEmptyState extends StatelessWidget {
+  final VoidCallback onOpenSettings;
+  final VoidCallback onTrySamples;
+
+  const _PermissionEmptyState({
+    required this.onOpenSettings,
+    required this.onTrySamples,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Photo access is off.\nTurn it on to view your library.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Color(0xFF8B857C)),
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton(
+              onPressed: onOpenSettings,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFEFEAE4),
+                foregroundColor: const Color(0xFF151411),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 10,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
-            );
-          },
+              child: const Text('Allow Photos Access'),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: onTrySamples,
+              child: const Text('Try Sample Photos'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final Widget? action;
+
+  const _EmptyState({
+    required this.title,
+    required this.subtitle,
+    this.action,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final subtitleColor = isDark
+        ? Colors.white.withValues(alpha: 0.6)
+        : Colors.black.withValues(alpha: 0.6);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: subtitleColor),
+            ),
+            if (action != null) ...[
+              const SizedBox(height: 12),
+              action!,
+            ],
+          ],
         ),
       ),
     );

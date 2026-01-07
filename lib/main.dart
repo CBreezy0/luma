@@ -1,11 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'features/gallery/gallery_page.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const LumaApp());
+  runApp(const ProviderScope(child: LumaApp()));
 }
 
 class LumaApp extends StatelessWidget {
