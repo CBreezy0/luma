@@ -37,6 +37,7 @@ final class NativeRenderer {
 
   func renderPreview(
     assetId: String,
+    assetPath: String? = nil,
     values: [String: Double],
     maxSide: Int,
     quality: Double,
@@ -54,6 +55,7 @@ final class NativeRenderer {
     renderQueue.async {
       self.fetchFullCIImage(
         assetId: assetId,
+        assetPath: assetPath,
         downsampleMaxSide: isDragPreview ? maxSide : nil
       ) { result in
         switch result {
@@ -69,7 +71,6 @@ final class NativeRenderer {
           )
           let t = self.clamp01(presetIntensity)
           let useImageBlend = (presetBlendMode == "image")
-            && !isDragPreview
             && presetValues != nil
 
           let output: CIImage
@@ -121,6 +122,7 @@ final class NativeRenderer {
 
   func exportFullRes(
     assetId: String,
+    assetPath: String? = nil,
     values: [String: Double],
     quality: Double,
     cropAspect: Double? = nil,
@@ -129,7 +131,7 @@ final class NativeRenderer {
     cropRect: CGRect? = nil,
     completion: @escaping (Result<String, Error>) -> Void
   ) {
-    fetchFullCIImage(assetId: assetId) { result in
+    fetchFullCIImage(assetId: assetId, assetPath: assetPath) { result in
       switch result {
       case .failure(let err):
         completion(.failure(err))
@@ -199,9 +201,52 @@ final class NativeRenderer {
 
   private func fetchFullCIImage(
     assetId: String,
+    assetPath: String? = nil,
     downsampleMaxSide: Int? = nil,
     completion: @escaping (Result<CIImage, Error>) -> Void
   ) {
+    if let assetPath = assetPath {
+      renderQueue.async {
+        guard let filePath = self.resolveFlutterAssetPath(assetPath) else {
+          completion(.failure(NSError(domain: "NativeRenderer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Asset path not found: \(assetPath)"])))
+          return
+        }
+        do {
+          let data = try Data(contentsOf: URL(fileURLWithPath: filePath))
+          let ci: CIImage
+          if let maxSide = downsampleMaxSide {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+              completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "Image source decode failed"])))
+              return
+            }
+            let options: [NSString: Any] = [
+              kCGImageSourceCreateThumbnailFromImageAlways: true,
+              kCGImageSourceThumbnailMaxPixelSize: maxSide,
+              kCGImageSourceShouldCacheImmediately: true,
+              kCGImageSourceShouldCache: true,
+            ]
+            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+              completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "Thumbnail decode failed"])))
+              return
+            }
+            ci = CIImage(cgImage: cgImage)
+          } else {
+            guard let decoded = CIImage(data: data) else {
+              completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "CIImage decode failed (data)"])))
+              return
+            }
+            ci = decoded
+          }
+
+          let output = self.coerceToSRGB(ci) ?? ci
+          completion(.success(output))
+        } catch {
+          completion(.failure(error))
+        }
+      }
+      return
+    }
+
     let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
     guard let asset = fetch.firstObject else {
       completion(.failure(NSError(domain: "NativeRenderer", code: -1, userInfo: [NSLocalizedDescriptionKey: "PHAsset not found for id: \(assetId)"])))
@@ -267,6 +312,17 @@ final class NativeRenderer {
     f.setValue(sRGB, forKey: "inputColorSpace")
     f.setValue(sRGB, forKey: "inputOutputColorSpace")
     return f.outputImage
+  }
+
+  private func resolveFlutterAssetPath(_ assetPath: String) -> String? {
+    if let path = Bundle.main.path(
+      forResource: assetPath,
+      ofType: nil,
+      inDirectory: "flutter_assets"
+    ) {
+      return path
+    }
+    return Bundle.main.path(forResource: assetPath, ofType: nil)
   }
 
   // MARK: - Crop / Rotate

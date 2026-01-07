@@ -54,6 +54,7 @@ import Flutter
           return
         }
 
+        let assetPath = args["assetPath"] as? String
         let quality = (args["quality"] as? Double) ?? 0.82
         let previewTier = (args["previewTier"] as? String) ?? "final"
         let isDragPreview = previewTier == "drag"
@@ -65,6 +66,7 @@ import Flutter
         self.previewRenderQueue.async {
           NativeRenderer.shared.renderPreview(
             assetId: assetId,
+            assetPath: assetPath,
             values: values,
             maxSide: maxSide,
             quality: quality,
@@ -101,10 +103,12 @@ import Flutter
           return
         }
 
+        let assetPath = args["assetPath"] as? String
         let quality = (args["quality"] as? Double) ?? 0.92
 
         NativeRenderer.shared.exportFullRes(
           assetId: assetId,
+          assetPath: assetPath,
           values: values,
           quality: quality,
           cropAspect: cropAspect,

@@ -8,27 +8,30 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image/image.dart' as img;
 import 'package:photo_manager/photo_manager.dart';
 
-import '../presets/preset_registry.dart'
-    show LumaPreset, LumaPresetPack, PresetRegistry;
+import '../favorites/favorites_provider.dart';
+import '../presets/preset_models.dart';
+import '../presets/preset_ui.dart';
+import '../samples/sample_images.dart';
 import 'native/native_renderer.dart';
 
-class EditorPage extends StatefulWidget {
+class EditorPage extends ConsumerStatefulWidget {
   final String assetId;
 
   const EditorPage({super.key, required this.assetId});
 
   @override
-  State<EditorPage> createState() => _EditorPageState();
+  ConsumerState<EditorPage> createState() => _EditorPageState();
 }
 
 enum _PreviewQuality { low, high }
 
 enum PresetStage { categories, list, active }
 
-class _EditorPageState extends State<EditorPage> {
+class _EditorPageState extends ConsumerState<EditorPage> {
   static const String _presetIntensityToolId = '__preset_intensity__';
   static const String _savedCategoryId = 'saved';
   static const Color _accent = Color(0xFFB08A6E);
@@ -52,6 +55,9 @@ class _EditorPageState extends State<EditorPage> {
   static const double _dragPreviewScale = 0.6;
   double _imageAspect = 4 / 5;
   bool _loading = true;
+  SampleImage? _sampleImage;
+  bool _showOriginalHold = false;
+  bool _showOriginalToggle = false;
 
   bool _buildingPreview = false;
   bool _buildingHQ = false;
@@ -480,6 +486,40 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Future<void> _loadImage() async {
+    if (widget.assetId.startsWith('sample:')) {
+      final sample = SampleImages.byId(widget.assetId);
+      if (sample == null) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        return;
+      }
+      final data = await SampleImages.loadBytes(sample.assetPath);
+      final decoded = img.decodeImage(data);
+      final aspect =
+          (decoded == null || decoded.height == 0)
+              ? (4 / 5)
+              : (decoded.width / decoded.height);
+
+      if (!mounted) return;
+
+      setState(() {
+        _sampleImage = sample;
+        _originalBytes = data;
+        _previewBytes = data;
+        _frontPreview = MemoryImage(data);
+        _imageAspect = aspect;
+        _loading = false;
+      });
+
+      _pushUndoCheckpoint();
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+      });
+      return;
+    }
+
     final asset = await AssetEntity.fromId(widget.assetId);
     if (asset == null) {
       if (!mounted) return;
@@ -813,13 +853,10 @@ class _EditorPageState extends State<EditorPage> {
     try {
       final requestId = ++_previewRequestId;
       final previewTier =
-          isIntensityDrag
-              ? 'final'
-              : (_isDragging && quality == _PreviewQuality.low)
-                  ? 'drag'
-                  : 'final';
+          (_isDragging && quality == _PreviewQuality.low) ? 'drag' : 'final';
       final future = NativeRenderer.renderPreview(
         assetId: widget.assetId,
+        assetPath: _sampleImage?.assetPath,
         values: Map<String, double>.from(valuesForRender),
         maxSide: maxSide,
         quality: q,
@@ -971,6 +1008,7 @@ class _EditorPageState extends State<EditorPage> {
     final fut =
         NativeRenderer.renderPreview(
               assetId: widget.assetId,
+              assetPath: _sampleImage?.assetPath,
               values: merged,
               maxSide: 520,
               quality: 0.74,
@@ -1529,6 +1567,7 @@ class _EditorPageState extends State<EditorPage> {
       final effectiveValues = _effectiveValues();
       await NativeRenderer.exportFullRes(
         assetId: widget.assetId,
+        assetPath: _sampleImage?.assetPath,
         values: Map<String, double>.from(effectiveValues),
         quality: 0.92,
         cropAspect: _cropAspect,
@@ -1619,6 +1658,8 @@ class _EditorPageState extends State<EditorPage> {
 
     final tool = _activeTool;
     final toolValue = _v(tool.id);
+    final favorites = ref.watch(favoritesProvider);
+    final isFavorite = favorites.contains(widget.assetId);
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.light.copyWith(
@@ -1703,6 +1744,20 @@ class _EditorPageState extends State<EditorPage> {
                             ),
                           ),
                         ),
+                        IconButton(
+                          onPressed: () {
+                            ref
+                                .read(favoritesProvider.notifier)
+                                .toggleFavorite(widget.assetId);
+                          },
+                          icon: Icon(
+                            isFavorite
+                                ? Icons.favorite
+                                : Icons.favorite_border,
+                          ),
+                          color:
+                              isFavorite ? const Color(0xFFE87A7A) : _muted,
+                        ),
                       ],
                     ),
                     Divider(height: 10, color: _ink.withAlpha(24)),
@@ -1732,12 +1787,17 @@ class _EditorPageState extends State<EditorPage> {
                         );
                         final height = width / previewAspect;
                         final displayBox = Offset.zero & Size(width, height);
-                        final frontProvider =
-                            _frontPreview ??
-                            (_originalBytes != null
+                        final showOriginal =
+                            _showOriginalHold || _showOriginalToggle;
+                        final originalProvider =
+                            _originalBytes != null
                                 ? MemoryImage(_originalBytes!)
-                                : null);
-                        final backProvider = _backPreview;
+                                : null;
+                        final frontProvider =
+                            showOriginal
+                                ? originalProvider
+                                : (_frontPreview ?? originalProvider);
+                        final backProvider = showOriginal ? null : _backPreview;
 
                         return Container(
                           width: width,
@@ -1833,6 +1893,44 @@ class _EditorPageState extends State<EditorPage> {
                                       ),
                                     ),
                                   ),
+                                Positioned(
+                                  left: 10,
+                                  top: 10,
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      setState(() {
+                                        _showOriginalToggle =
+                                            !_showOriginalToggle;
+                                      });
+                                    },
+                                    onLongPressStart: (_) {
+                                      setState(() {
+                                        _showOriginalHold = true;
+                                      });
+                                    },
+                                    onLongPressEnd: (_) {
+                                      setState(() {
+                                        _showOriginalHold = false;
+                                      });
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: _panelHighlight.withAlpha(
+                                          (0.78 * 255).round(),
+                                        ),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Icon(
+                                        _showOriginalToggle || _showOriginalHold
+                                            ? Icons.visibility
+                                            : Icons.compare,
+                                        size: 18,
+                                        color: _ink,
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -2704,9 +2802,9 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  LumaPresetPack? _findPresetPack(String id) {
-    for (final pack in PresetRegistry.packs) {
-      if (pack.id == id) return pack;
+  PresetCategory? _categoryForId(String id) {
+    for (final category in PresetUi.categories) {
+      if (category.id == id) return category;
     }
     return null;
   }
@@ -2768,6 +2866,7 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Widget _buildPresetCategoriesView() {
+    final groups = PresetUi.groupedPresets();
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
@@ -2781,12 +2880,12 @@ class _EditorPageState extends State<EditorPage> {
           ),
         ),
         const SizedBox(height: 10),
-        for (final pack in PresetRegistry.packs) ...[
+        for (final group in groups) ...[
           _buildPresetCategoryTile(
-            title: pack.name,
-            subtitle: pack.description,
-            count: pack.presetIds.length,
-            onTap: () => _selectPresetCategory(pack.id),
+            title: group.category.name,
+            subtitle: group.category.description,
+            count: group.presets.length,
+            onTap: () => _selectPresetCategory(group.category.id),
           ),
           const SizedBox(height: 10),
         ],
@@ -2807,12 +2906,14 @@ class _EditorPageState extends State<EditorPage> {
     if (selectedId == null) return _buildPresetCategoriesView();
 
     final isSaved = selectedId == _savedCategoryId;
-    final pack = isSaved ? null : _findPresetPack(selectedId);
-    if (!isSaved && pack == null) return _buildPresetCategoriesView();
+    final category = isSaved ? null : _categoryForId(selectedId);
+    if (!isSaved && category == null) return _buildPresetCategoriesView();
 
-    final title = isSaved ? 'Saved' : pack!.name;
-    final subtitle = isSaved ? 'Your custom presets.' : pack!.description;
+    final title = isSaved ? 'Saved' : category!.name;
+    final subtitle = isSaved ? 'Your custom presets.' : category!.description;
     final fallbackBytes = _previewBytes ?? _originalBytes!;
+    final presets =
+        isSaved ? const <LumaPreset>[] : PresetUi.presetsForCategory(selectedId);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -2876,10 +2977,10 @@ class _EditorPageState extends State<EditorPage> {
             height: 170,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              itemCount: pack!.presetIds.length,
+              itemCount: presets.length,
               separatorBuilder: (_, _) => const SizedBox(width: 12),
               itemBuilder: (context, i) {
-                final p = PresetRegistry.byId(pack.presetIds[i]);
+                final p = presets[i];
                 return _RegistryPresetTile(
                   preset: p,
                   selected: _activePresetId == p.id,

@@ -2,8 +2,6 @@ name: luma
 description: "Minimalist iOS photo editor built with Flutter and Core Image."
 publish_to: 'none'
 
-version: 1.0.1+2
-
 environment:
   sdk: ^3.10.3
 
@@ -20,6 +18,7 @@ dependencies:
   image_cropper: ^8.0.2
   image: ^4.2.0
   vector_math: ^2.1.4
+  shared_preferences: ^2.2.3
 
   # Monetization
   in_app_purchase: ^3.2.0
@@ -61,6 +60,8 @@ flutter:
   assets:
     # Editing assets
     - assets/grain.png
+    - assets/samples/sample_01.png
+    - assets/samples/sample_02.png
 
     # Branding
     - assets/branding/luma_app_icon_light.png

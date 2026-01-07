@@ -8,6 +8,7 @@ class NativeRenderer {
     required Map<String, double> values,
     required int maxSide,
     required double quality,
+    String? assetPath,
     String previewTier = 'final',
     int requestId = 0,
     Map<String, double>? presetValues,
@@ -39,6 +40,7 @@ class NativeRenderer {
       'values': values,
       'maxSide': maxSide,
       'quality': quality,
+      if (assetPath != null) 'assetPath': assetPath,
       'previewTier': previewTier,
       'requestId': requestId,
       if (presetValues != null) 'presetValues': presetValues,
@@ -69,6 +71,7 @@ class NativeRenderer {
     required String assetId,
     required Map<String, double> values,
     required double quality,
+    String? assetPath,
     double? cropAspect,
     int rotationTurns = 0,
     double straightenDegrees = 0,
@@ -94,6 +97,7 @@ class NativeRenderer {
       'assetId': assetId,
       'values': values,
       'quality': quality,
+      if (assetPath != null) 'assetPath': assetPath,
       'crop': crop,
     });
   }
