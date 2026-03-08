@@ -3097,7 +3097,6 @@ class PresetRegistry {
         'chromatic_aberration': 1.00,
       },
     ),
-
   ];
 
   static LumaPreset byId(String id) => all.firstWhere((p) => p.id == id);

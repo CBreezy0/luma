@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:photo_manager/photo_manager.dart';
 
-import '../editor/editor_page.dart';
+import '../camera/camera_page.dart';
+import '../editor/editor_navigation.dart';
 import '../favorites/favorites_provider.dart';
 import 'gallery_controller.dart';
 import 'gallery_models.dart';
@@ -27,7 +28,6 @@ class _GalleryPageState extends ConsumerState<GalleryPage> {
   static const Color _tile = Color(0xFFEDE7E1);
   static const Color _darkCanvas = Color(0xFF151515);
   static const Color _darkTile = Color(0xFF2A2A2A);
-  static const Color _editorCanvas = Color(0xFF151515);
 
   @override
   void initState() {
@@ -50,34 +50,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage> {
   }
 
   void _openEditor(String id) {
-    Navigator.of(context).push(
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 320),
-        reverseTransitionDuration: const Duration(milliseconds: 240),
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            EditorPage(assetId: id),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          final backgroundFade = CurvedAnimation(
-            parent: animation,
-            curve: const Interval(0.0, 0.45, curve: Curves.easeOut),
-          );
-          final contentFade = CurvedAnimation(
-            parent: animation,
-            curve: const Interval(0.25, 1.0, curve: Curves.easeOut),
-          );
-
-          return Stack(
-            children: [
-              FadeTransition(
-                opacity: backgroundFade,
-                child: const ColoredBox(color: _editorCanvas),
-              ),
-              FadeTransition(opacity: contentFade, child: child),
-            ],
-          );
-        },
-      ),
-    );
+    Navigator.of(context).push(buildEditorRoute(assetId: id));
   }
 
   Future<Uint8List?> _getThumb(AssetEntity asset) {
@@ -109,6 +82,22 @@ class _GalleryPageState extends ConsumerState<GalleryPage> {
 
   void _toggleFavorite(String id) {
     ref.read(favoritesProvider.notifier).toggleFavorite(id);
+  }
+
+  Future<void> _openCamera() async {
+    await Navigator.of(context).push(
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 220),
+        reverseTransitionDuration: const Duration(milliseconds: 180),
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const CameraPage(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+      ),
+    );
+    if (!mounted) return;
+    await ref.read(galleryControllerProvider.notifier).refresh();
   }
 
   void _openAlbumsSheet(GalleryState state) {
@@ -163,11 +152,10 @@ class _GalleryPageState extends ConsumerState<GalleryPage> {
                   ),
                   onTap: () {
                     Navigator.of(context).pop();
-                    ref.read(galleryControllerProvider.notifier).setFilter(
-                          GalleryFilter.album(
-                            id: album.id,
-                            name: album.name,
-                          ),
+                    ref
+                        .read(galleryControllerProvider.notifier)
+                        .setFilter(
+                          GalleryFilter.album(id: album.id, name: album.name),
                         );
                   },
                 );
@@ -206,20 +194,19 @@ class _GalleryPageState extends ConsumerState<GalleryPage> {
         backgroundColor: canvas,
         elevation: 0,
         actions: [
+          IconButton(
+            tooltip: 'Camera',
+            onPressed: _openCamera,
+            icon: Icon(Icons.camera_alt_outlined, color: titleColor),
+          ),
           PopupMenuButton<GallerySort>(
             initialValue: state.sort,
             onSelected: (value) {
               ref.read(galleryControllerProvider.notifier).setSort(value);
             },
             itemBuilder: (context) => const [
-              PopupMenuItem(
-                value: GallerySort.newest,
-                child: Text('Newest'),
-              ),
-              PopupMenuItem(
-                value: GallerySort.oldest,
-                child: Text('Oldest'),
-              ),
+              PopupMenuItem(value: GallerySort.newest, child: Text('Newest')),
+              PopupMenuItem(value: GallerySort.oldest, child: Text('Oldest')),
               PopupMenuItem(
                 value: GallerySort.recentlyEdited,
                 child: Text('Recently edited'),
@@ -248,8 +235,9 @@ class _GalleryPageState extends ConsumerState<GalleryPage> {
                 if (showPermissionEmpty) {
                   return _PermissionEmptyState(
                     onOpenSettings: () => PhotoManager.openSetting(),
-                    onTrySamples: () =>
-                        ref.read(galleryControllerProvider.notifier).showSamples(),
+                    onTrySamples: () => ref
+                        .read(galleryControllerProvider.notifier)
+                        .showSamples(),
                   );
                 }
 
@@ -276,8 +264,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage> {
 
                 return NotificationListener<ScrollNotification>(
                   onNotification: (n) {
-                    if (n.metrics.pixels >=
-                        n.metrics.maxScrollExtent - 600) {
+                    if (n.metrics.pixels >= n.metrics.maxScrollExtent - 600) {
                       ref.read(galleryControllerProvider.notifier).loadMore();
                     }
                     return false;
@@ -288,10 +275,10 @@ class _GalleryPageState extends ConsumerState<GalleryPage> {
                     cacheExtent: 900,
                     gridDelegate:
                         const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      crossAxisSpacing: 10,
-                      mainAxisSpacing: 10,
-                    ),
+                          crossAxisCount: 3,
+                          crossAxisSpacing: 10,
+                          mainAxisSpacing: 10,
+                        ),
                     itemCount:
                         state.items.length + (state.isLoadingMore ? 1 : 0),
                     itemBuilder: (context, i) {
@@ -410,8 +397,9 @@ class _FilterBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final activeColor =
-        isDark ? const Color(0xFFEFEAE4) : const Color(0xFF151515);
+    final activeColor = isDark
+        ? const Color(0xFFEFEAE4)
+        : const Color(0xFF151515);
     final inactiveColor = isDark
         ? Colors.white.withValues(alpha: 0.5)
         : Colors.black.withValues(alpha: 0.5);
@@ -485,10 +473,7 @@ class _FilterBar extends StatelessWidget {
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            for (final chip in chips) ...[
-              chip,
-              const SizedBox(width: 8),
-            ],
+            for (final chip in chips) ...[chip, const SizedBox(width: 8)],
           ],
         ),
       ),
@@ -599,11 +584,7 @@ class _EmptyState extends StatelessWidget {
   final String subtitle;
   final Widget? action;
 
-  const _EmptyState({
-    required this.title,
-    required this.subtitle,
-    this.action,
-  });
+  const _EmptyState({required this.title, required this.subtitle, this.action});
 
   @override
   Widget build(BuildContext context) {
@@ -620,10 +601,7 @@ class _EmptyState extends StatelessWidget {
             Text(
               title,
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 16,
-              ),
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
             ),
             const SizedBox(height: 6),
             Text(
@@ -631,10 +609,7 @@ class _EmptyState extends StatelessWidget {
               textAlign: TextAlign.center,
               style: TextStyle(color: subtitleColor),
             ),
-            if (action != null) ...[
-              const SizedBox(height: 12),
-              action!,
-            ],
+            if (action != null) ...[const SizedBox(height: 12), action!],
           ],
         ),
       ),

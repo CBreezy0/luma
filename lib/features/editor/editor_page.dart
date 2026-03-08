@@ -3,6 +3,7 @@
 // Luma Editor Page (Native Preview + Native Export)
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
@@ -18,10 +19,45 @@ import '../presets/preset_ui.dart';
 import '../samples/sample_images.dart';
 import 'native/native_renderer.dart';
 
+/// Feature flags.
+const bool kEnableOpticsControls = false;
+
+/// Controls currently not implemented in the native renderer.
+const Set<String> _unsupportedNativeKeys = {
+  'distortion',
+  'fringing',
+  'dehaze',
+  'vignetteFeather',
+  'vignette_feather',
+  'lens_correction',
+  'chromatic_aberration',
+};
+
+/// Remove unsupported controls before sending values to native renderer.
+Map<String, double> sanitizeForNativeRenderer(Map<String, double> values) {
+  final result = <String, double>{};
+  for (final entry in values.entries) {
+    if (_unsupportedNativeKeys.contains(entry.key)) continue;
+    result[entry.key] = entry.value;
+  }
+  return result;
+}
+
 class EditorPage extends ConsumerStatefulWidget {
   final String assetId;
+  final String? sourceFilePath;
+  final String? initialSimulationId;
+  final double? initialLookStrength;
+  final int? capturedAtMs;
 
-  const EditorPage({super.key, required this.assetId});
+  const EditorPage({
+    super.key,
+    required this.assetId,
+    this.sourceFilePath,
+    this.initialSimulationId,
+    this.initialLookStrength,
+    this.capturedAtMs,
+  });
 
   @override
   ConsumerState<EditorPage> createState() => _EditorPageState();
@@ -200,28 +236,29 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     ),
     _ToolGroup(
       label: 'Effects',
-      tools: const [
+      tools: [
         _ToolItem(
           id: 'texture',
           label: 'Texture',
-          min: -1,
+          min: 0,
           max: 1,
           defaultValue: 0,
         ),
         _ToolItem(
           id: 'clarity',
           label: 'Clarity',
-          min: -1,
+          min: 0,
           max: 1,
           defaultValue: 0,
         ),
-        _ToolItem(
-          id: 'dehaze',
-          label: 'Dehaze',
-          min: -1,
-          max: 1,
-          defaultValue: 0,
-        ),
+        if (kEnableOpticsControls)
+          _ToolItem(
+            id: 'dehaze',
+            label: 'Dehaze',
+            min: -1,
+            max: 1,
+            defaultValue: 0,
+          ),
         _ToolItem(id: 'grain', label: 'Grain', min: 0, max: 1, defaultValue: 0),
         _ToolItem(
           id: 'vignette',
@@ -258,27 +295,28 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         ),
       ],
     ),
-    _ToolGroup(
-      label: 'Optics',
-      tools: const [
-        _ToolItem(
-          id: 'lens_correction',
-          label: 'Lens Corr',
-          kind: ToolKind.toggle,
-          min: 0,
-          max: 1,
-          defaultValue: 0,
-        ),
-        _ToolItem(
-          id: 'chromatic_aberration',
-          label: 'Remove CA',
-          kind: ToolKind.toggle,
-          min: 0,
-          max: 1,
-          defaultValue: 0,
-        ),
-      ],
-    ),
+    if (kEnableOpticsControls)
+      _ToolGroup(
+        label: 'Optics',
+        tools: const [
+          _ToolItem(
+            id: 'lens_correction',
+            label: 'Lens Corr',
+            kind: ToolKind.toggle,
+            min: 0,
+            max: 1,
+            defaultValue: 0,
+          ),
+          _ToolItem(
+            id: 'chromatic_aberration',
+            label: 'Remove CA',
+            kind: ToolKind.toggle,
+            min: 0,
+            max: 1,
+            defaultValue: 0,
+          ),
+        ],
+      ),
     _ToolGroup(
       label: 'Crop',
       tools: const [
@@ -378,10 +416,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       isFreeformCrop: _isFreeformCrop,
       freeformCropRect: _freeformCropRect,
       activePresetName: _activePresetName,
-      activePresetValues:
-          _activePresetValues == null
-              ? null
-              : Map<String, double>.from(_activePresetValues!),
+      activePresetValues: _activePresetValues == null
+          ? null
+          : Map<String, double>.from(_activePresetValues!),
       activePresetId: _activePresetId,
       presetIntensityRaw: _presetIntensityRaw,
     );
@@ -405,10 +442,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       _isFreeformCrop = s.isFreeformCrop;
       _freeformCropRect = s.freeformCropRect;
       _activePresetName = s.activePresetName;
-      _activePresetValues =
-          s.activePresetValues == null
-              ? null
-              : Map<String, double>.from(s.activePresetValues!);
+      _activePresetValues = s.activePresetValues == null
+          ? null
+          : Map<String, double>.from(s.activePresetValues!);
       _activePresetId = s.activePresetId;
       _presetIntensityRaw = s.presetIntensityRaw;
     });
@@ -486,6 +522,37 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   }
 
   Future<void> _loadImage() async {
+    if (widget.sourceFilePath != null) {
+      try {
+        final fileData = await File(widget.sourceFilePath!).readAsBytes();
+        final decoded = img.decodeImage(fileData);
+        final aspect = (decoded == null || decoded.height == 0)
+            ? (4 / 5)
+            : (decoded.width / decoded.height);
+
+        if (!mounted) return;
+
+        setState(() {
+          _originalBytes = fileData;
+          _previewBytes = fileData;
+          _frontPreview = MemoryImage(fileData);
+          _imageAspect = aspect;
+          _loading = false;
+        });
+      } catch (_) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        return;
+      }
+
+      _pushUndoCheckpoint();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
+      });
+      return;
+    }
+
     if (widget.assetId.startsWith('sample:')) {
       final sample = SampleImages.byId(widget.assetId);
       if (sample == null) {
@@ -495,10 +562,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       }
       final data = await SampleImages.loadBytes(sample.assetPath);
       final decoded = img.decodeImage(data);
-      final aspect =
-          (decoded == null || decoded.height == 0)
-              ? (4 / 5)
-              : (decoded.width / decoded.height);
+      final aspect = (decoded == null || decoded.height == 0)
+          ? (4 / 5)
+          : (decoded.width / decoded.height);
 
       if (!mounted) return;
 
@@ -768,8 +834,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
 
     final int token = ++_renderToken;
     final isDragLow = quality == _PreviewQuality.low && _isDragging;
-    final isIntensityDrag =
-        isDragLow && _dragToolId == _presetIntensityToolId;
+    final isIntensityDrag = isDragLow && _dragToolId == _presetIntensityToolId;
     if (!isDragLow) {
       setState(() {
         _buildingPreview = true;
@@ -788,8 +853,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     }
 
     final presetValues = _activePresetValues;
-    final presetIntensity =
-        (presetValues == null) ? null : _presetIntensityRaw.clamp(0.0, 1.0);
+    final presetIntensity = (presetValues == null)
+        ? null
+        : _presetIntensityRaw.clamp(0.0, 1.0);
     final Map<String, double> valuesForRender;
     Map<String, double>? presetValuesForRender = presetValues;
     String? presetBlendMode;
@@ -802,15 +868,19 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       valuesForRender = Map<String, double>.from(_values);
       presetBlendMode = presetValues == null ? null : 'image';
     }
+    final sanitizedValuesForRender = sanitizeForNativeRenderer(valuesForRender);
+    final sanitizedPresetValuesForRender = presetValuesForRender == null
+        ? null
+        : sanitizeForNativeRenderer(presetValuesForRender);
     final useCropRect =
         !_isCropMode &&
         _normalizedCropRect() != const Rect.fromLTWH(0, 0, 1, 1);
     final cacheKey = _previewKey(
-      valuesForRender,
+      sanitizedValuesForRender,
       maxSide,
       q,
       useCropRect: useCropRect,
-      presetValues: presetValuesForRender,
+      presetValues: sanitizedPresetValuesForRender,
       presetIntensity: presetIntensity,
       presetBlendMode: presetBlendMode,
     );
@@ -852,20 +922,20 @@ class _EditorPageState extends ConsumerState<EditorPage> {
 
     try {
       final requestId = ++_previewRequestId;
-      final previewTier =
-          (_isDragging && quality == _PreviewQuality.low) ? 'drag' : 'final';
+      final previewTier = (_isDragging && quality == _PreviewQuality.low)
+          ? 'drag'
+          : 'final';
       final future = NativeRenderer.renderPreview(
         assetId: widget.assetId,
-        assetPath: _sampleImage?.assetPath,
-        values: Map<String, double>.from(valuesForRender),
+        assetPath: widget.sourceFilePath ?? _sampleImage?.assetPath,
+        values: Map<String, double>.from(sanitizedValuesForRender),
         maxSide: maxSide,
         quality: q,
         previewTier: previewTier,
         requestId: requestId,
-        presetValues:
-            presetValuesForRender == null
-                ? null
-                : Map<String, double>.from(presetValuesForRender),
+        presetValues: sanitizedPresetValuesForRender == null
+            ? null
+            : Map<String, double>.from(sanitizedPresetValuesForRender),
         presetIntensity: presetIntensity,
         presetBlendMode: presetBlendMode,
         rotationTurns: _rotateQuarterTurns,
@@ -1001,6 +1071,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
 
     final merged = Map<String, double>.from(_defaultValues)
       ..addAll(presetValues);
+    final sanitizedMerged = sanitizeForNativeRenderer(merged);
 
     final useCropRect =
         !_isCropMode &&
@@ -1008,8 +1079,8 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     final fut =
         NativeRenderer.renderPreview(
               assetId: widget.assetId,
-              assetPath: _sampleImage?.assetPath,
-              values: merged,
+              assetPath: widget.sourceFilePath ?? _sampleImage?.assetPath,
+              values: sanitizedMerged,
               maxSide: 520,
               quality: 0.74,
               previewTier: 'final',
@@ -1564,10 +1635,10 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     }
 
     try {
-      final effectiveValues = _effectiveValues();
+      final effectiveValues = sanitizeForNativeRenderer(_effectiveValues());
       await NativeRenderer.exportFullRes(
         assetId: widget.assetId,
-        assetPath: _sampleImage?.assetPath,
+        assetPath: widget.sourceFilePath ?? _sampleImage?.assetPath,
         values: Map<String, double>.from(effectiveValues),
         quality: 0.92,
         cropAspect: _cropAspect,
@@ -1615,6 +1686,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       ),
     );
 
+    if (!mounted) return;
     if (name == null) return;
 
     _pushUndoCheckpoint();
@@ -1751,12 +1823,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
                                 .toggleFavorite(widget.assetId);
                           },
                           icon: Icon(
-                            isFavorite
-                                ? Icons.favorite
-                                : Icons.favorite_border,
+                            isFavorite ? Icons.favorite : Icons.favorite_border,
                           ),
-                          color:
-                              isFavorite ? const Color(0xFFE87A7A) : _muted,
+                          color: isFavorite ? const Color(0xFFE87A7A) : _muted,
                         ),
                       ],
                     ),
@@ -1789,14 +1858,12 @@ class _EditorPageState extends ConsumerState<EditorPage> {
                         final displayBox = Offset.zero & Size(width, height);
                         final showOriginal =
                             _showOriginalHold || _showOriginalToggle;
-                        final originalProvider =
-                            _originalBytes != null
-                                ? MemoryImage(_originalBytes!)
-                                : null;
-                        final frontProvider =
-                            showOriginal
-                                ? originalProvider
-                                : (_frontPreview ?? originalProvider);
+                        final originalProvider = _originalBytes != null
+                            ? MemoryImage(_originalBytes!)
+                            : null;
+                        final frontProvider = showOriginal
+                            ? originalProvider
+                            : (_frontPreview ?? originalProvider);
                         final backProvider = showOriginal ? null : _backPreview;
 
                         return Container(
@@ -2912,8 +2979,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     final title = isSaved ? 'Saved' : category!.name;
     final subtitle = isSaved ? 'Your custom presets.' : category!.description;
     final fallbackBytes = _previewBytes ?? _originalBytes!;
-    final presets =
-        isSaved ? const <LumaPreset>[] : PresetUi.presetsForCategory(selectedId);
+    final presets = isSaved
+        ? const <LumaPreset>[]
+        : PresetUi.presetsForCategory(selectedId);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -2942,7 +3010,10 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         if (subtitle.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(left: 48, right: 8, bottom: 8),
-            child: Text(subtitle, style: TextStyle(fontSize: 12, color: _muted)),
+            child: Text(
+              subtitle,
+              style: TextStyle(fontSize: 12, color: _muted),
+            ),
           ),
         const SizedBox(height: 8),
         if (isSaved) ...[
@@ -3078,8 +3149,8 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   Widget _buildPresetsTab() {
     final stage =
         (_presetStage == PresetStage.active && _activePresetValues == null)
-            ? PresetStage.categories
-            : _presetStage;
+        ? PresetStage.categories
+        : _presetStage;
 
     switch (stage) {
       case PresetStage.categories:

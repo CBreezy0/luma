@@ -24,7 +24,7 @@ class GalleryFilter {
   const GalleryFilter.raw() : this._(GalleryFilterType.raw);
 
   const GalleryFilter.album({required String id, required String name})
-      : this._(GalleryFilterType.album, albumId: id, albumName: name);
+    : this._(GalleryFilterType.album, albumId: id, albumName: name);
 
   const GalleryFilter.samples() : this._(GalleryFilterType.samples);
 }
@@ -58,16 +58,16 @@ class GalleryItem {
   final DateTime? updatedAt;
 
   GalleryItem.asset(AssetEntity this.asset)
-      : id = asset.id,
-        type = GalleryItemType.asset,
-        sample = null,
-        createdAt = asset.createDateTime,
-        updatedAt = asset.modifiedDateTime;
+    : id = asset.id,
+      type = GalleryItemType.asset,
+      sample = null,
+      createdAt = asset.createDateTime,
+      updatedAt = asset.modifiedDateTime;
 
   GalleryItem.sample(SampleImage this.sample)
-      : id = sample.id,
-        type = GalleryItemType.sample,
-        asset = null,
-        createdAt = null,
-        updatedAt = null;
+    : id = sample.id,
+      type = GalleryItemType.sample,
+      asset = null,
+      createdAt = null,
+      updatedAt = null;
 }

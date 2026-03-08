@@ -29,7 +29,7 @@
 		<key>NSCameraUsageDescription</key>
 		<string>Luma needs camera access to capture photos.</string>
 		<key>NSPhotoLibraryAddUsageDescription</key>
-		<string>We need permission to save edited photos to your library.</string>
+		<string>Luma saves your captures to Photos.</string>
 		<key>NSPhotoLibraryUsageDescription</key>
 		<string>We need access to your photo library to edit photos.</string>
 		<key>UIApplicationSupportsIndirectInputEvents</key>

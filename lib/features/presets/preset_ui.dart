@@ -5,10 +5,7 @@ class PresetCategoryGroup {
   final PresetCategory category;
   final List<LumaPreset> presets;
 
-  const PresetCategoryGroup({
-    required this.category,
-    required this.presets,
-  });
+  const PresetCategoryGroup({required this.category, required this.presets});
 }
 
 class PresetUi {
@@ -43,11 +40,7 @@ class PresetUi {
       name: 'Indoor',
       description: 'Warm interior light.',
     ),
-    PresetCategory(
-      id: 'bw',
-      name: 'B&W',
-      description: 'Monochrome contrast.',
-    ),
+    PresetCategory(id: 'bw', name: 'B&W', description: 'Monochrome contrast.'),
     PresetCategory(
       id: 'vibrant',
       name: 'Vibrant',

@@ -76,19 +76,19 @@ class GalleryState {
 
 final galleryControllerProvider =
     StateNotifierProvider<GalleryController, GalleryState>((ref) {
-  final controller = GalleryController(
-    collectionsRepository: GalleryCollectionsRepository(),
-  );
-  ref.listen<Set<String>>(favoritesProvider, (_, next) {
-    controller.updateFavorites(next);
-  });
-  controller.init();
-  return controller;
-});
+      final controller = GalleryController(
+        collectionsRepository: GalleryCollectionsRepository(),
+      );
+      ref.listen<Set<String>>(favoritesProvider, (_, next) {
+        controller.updateFavorites(next);
+      });
+      controller.init();
+      return controller;
+    });
 
 class GalleryController extends StateNotifier<GalleryState> {
   GalleryController({required this.collectionsRepository})
-      : super(GalleryState.initial());
+    : super(GalleryState.initial());
 
   final GalleryCollectionsRepository collectionsRepository;
   final List<SampleImage> _samples = SampleImages.items;
@@ -187,8 +187,7 @@ class GalleryController extends StateNotifier<GalleryState> {
     final items = await pager.loadNext();
     if (token != _loadToken) return;
 
-    final updated =
-        reset ? items : [...state.items, ...items];
+    final updated = reset ? items : [...state.items, ...items];
 
     state = state.copyWith(
       items: updated,

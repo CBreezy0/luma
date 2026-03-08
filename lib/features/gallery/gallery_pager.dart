@@ -67,10 +67,7 @@ class GalleryPager {
       return const [];
     }
     final sorted = _sortedPath(path);
-    final assets = await sorted.getAssetListPaged(
-      page: _page,
-      size: pageSize,
-    );
+    final assets = await sorted.getAssetListPaged(page: _page, size: pageSize);
     _page += 1;
     if (assets.length < pageSize) _hasMore = false;
     return [
@@ -96,9 +93,7 @@ class GalleryPager {
           .map(GalleryItem.sample)
           .toList();
       if (sampleFavorites.isNotEmpty) {
-        items.addAll(
-          sampleFavorites.take(pageSize),
-        );
+        items.addAll(sampleFavorites.take(pageSize));
       }
       _sampleFavoritesConsumed = true;
       if (items.length >= pageSize) {
@@ -189,17 +184,17 @@ class GalleryPager {
   AssetPathEntity _sortedPath(AssetPathEntity path) {
     final order = switch (sort) {
       GallerySort.newest => const OrderOption(
-          type: OrderOptionType.createDate,
-          asc: false,
-        ),
+        type: OrderOptionType.createDate,
+        asc: false,
+      ),
       GallerySort.oldest => const OrderOption(
-          type: OrderOptionType.createDate,
-          asc: true,
-        ),
+        type: OrderOptionType.createDate,
+        asc: true,
+      ),
       GallerySort.recentlyEdited => const OrderOption(
-          type: OrderOptionType.updateDate,
-          asc: false,
-        ),
+        type: OrderOptionType.updateDate,
+        asc: false,
+      ),
     };
     final option = FilterOptionGroup(orders: [order]);
     return path.copyWith(filterOption: option);

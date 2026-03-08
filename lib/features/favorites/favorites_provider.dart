@@ -8,11 +8,11 @@ final favoritesRepositoryProvider = Provider<FavoritesRepository>((ref) {
 
 final favoritesProvider =
     StateNotifierProvider<FavoritesController, Set<String>>((ref) {
-  final repo = ref.watch(favoritesRepositoryProvider);
-  final controller = FavoritesController(repo);
-  controller.load();
-  return controller;
-});
+      final repo = ref.watch(favoritesRepositoryProvider);
+      final controller = FavoritesController(repo);
+      controller.load();
+      return controller;
+    });
 
 class FavoritesController extends StateNotifier<Set<String>> {
   FavoritesController(this._repo) : super(const {});

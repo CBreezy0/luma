@@ -12,6 +12,17 @@ final class NativeRenderer {
     qos: .userInitiated
   )
 
+  /// Adjustments not yet supported by the native renderer.
+  private let unsupportedControls: Set<String> = [
+    "distortion",
+    "fringing",
+    "dehaze",
+    "vignetteFeather",
+    "vignette_feather",
+    "lens_correction",
+    "chromatic_aberration"
+  ]
+
   // Force predictable color output (fixes purple/magenta)
   private let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
 
@@ -315,6 +326,20 @@ final class NativeRenderer {
   }
 
   private func resolveFlutterAssetPath(_ assetPath: String) -> String? {
+    let normalizedPath: String
+    if assetPath.hasPrefix("file://"),
+       let url = URL(string: assetPath),
+       url.isFileURL
+    {
+      normalizedPath = url.path
+    } else {
+      normalizedPath = assetPath
+    }
+
+    if FileManager.default.fileExists(atPath: normalizedPath) {
+      return normalizedPath
+    }
+
     if let path = Bundle.main.path(
       forResource: assetPath,
       ofType: nil,
@@ -419,7 +444,15 @@ final class NativeRenderer {
   private func applyAdjustments(input: CIImage, values: [String: Double]) -> CIImage {
     var out = input
 
-    func v(_ key: String) -> Double { values[key] ?? 0.0 }
+    #if DEBUG
+    for key in values.keys where unsupportedControls.contains(key) {
+      print("⚠️ NativeRenderer: unsupported adjustment ignored: \(key)")
+    }
+    #endif
+
+    let sanitizedValues = values.filter { !unsupportedControls.contains($0.key) }
+
+    func v(_ key: String) -> Double { sanitizedValues[key] ?? 0.0 }
 
     // exposure: -1..1
     let exposure = v("exposure") * 1.0

@@ -10,19 +10,30 @@ import Flutter
     label: "com.luma.preview.render",
     qos: .userInitiated
   )
+  private var nativeRendererChannel: FlutterMethodChannel?
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    GeneratedPluginRegistrant.register(with: self)
+    registerNativeRendererChannel()
+    registerLumaCameraPlugin()
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
 
-    let controller = window?.rootViewController as! FlutterViewController
+  private func registerNativeRendererChannel() {
+    guard let registrar = registrar(forPlugin: "LumaNativeRendererChannel") else { return }
     let channel = FlutterMethodChannel(
       name: "luma/native_renderer",
-      binaryMessenger: controller.binaryMessenger
+      binaryMessenger: registrar.messenger()
     )
-
-    channel.setMethodCallHandler { call, result in
+    nativeRendererChannel = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self else {
+        result(FlutterError(code: "unavailable", message: "App delegate unavailable", details: nil))
+        return
+      }
       let args = (call.arguments as? [String: Any]) ?? [:]
       let crop = args["crop"] as? [String: Any]
       let cropAspect = crop?["aspect"] as? Double
@@ -128,9 +139,12 @@ import Flutter
         result(FlutterMethodNotImplemented)
       }
     }
+  }
 
-    GeneratedPluginRegistrant.register(with: self)
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  private func registerLumaCameraPlugin() {
+    if let registrar = self.registrar(forPlugin: "LumaCameraPlugin") {
+      LumaCameraPlugin.register(with: registrar)
+    }
   }
 }
 #else
