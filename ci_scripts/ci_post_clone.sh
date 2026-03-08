@@ -1,10 +1,14 @@
 #!/bin/sh
 set -e
 
-echo "Setting up Flutter"
+echo "Installing Flutter SDK"
 
-# Ensure Flutter dependencies are ready
-flutter --version
+git clone https://github.com/flutter/flutter.git -b stable --depth 1 $HOME/flutter
+export PATH="$HOME/flutter/bin:$PATH"
+
+flutter doctor
+
+echo "Pre-caching iOS artifacts"
 flutter precache --ios
 
 echo "Installing Dart dependencies"
@@ -15,12 +19,10 @@ echo "Installing CocoaPods"
 sudo gem install cocoapods
 
 cd ios
-pod repo update
-pod install
+pod install --repo-update
 cd ..
 
-echo "Generating Flutter iOS configuration files"
-
+echo "Generating Flutter iOS build configuration"
 flutter build ios --debug --no-codesign
 
-echo "Post clone setup complete"
+echo "Xcode Cloud setup complete"
