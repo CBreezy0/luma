@@ -1,18 +1,26 @@
 #!/bin/sh
 set -e
 
-echo "Installing Flutter dependencies"
-flutter pub get
+echo "Setting up Flutter"
 
-echo "Generating Flutter iOS build files"
-flutter build ios --debug --no-codesign
+# Ensure Flutter dependencies are ready
+flutter --version
+flutter precache --ios
+
+echo "Installing Dart dependencies"
+flutter pub get
 
 echo "Installing CocoaPods"
 
 sudo gem install cocoapods
 
 cd ios
-pod install --repo-update
+pod repo update
+pod install
 cd ..
+
+echo "Generating Flutter iOS configuration files"
+
+flutter build ios --debug --no-codesign
 
 echo "Post clone setup complete"
