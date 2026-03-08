@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 
 import 'camera_models.dart';
 import 'camera_provider.dart';
@@ -40,6 +41,7 @@ class _CameraPageState extends ConsumerState<CameraPage>
   Offset? _focusIndicatorPosition;
   bool _showFocusIndicator = false;
   Timer? _focusIndicatorTimer;
+  final ImagePicker _imagePicker = ImagePicker();
 
   @override
   void initState() {
@@ -63,8 +65,6 @@ class _CameraPageState extends ConsumerState<CameraPage>
     final initState = ref.read(cameraUiControllerProvider);
     if (!initState.isReady) return;
     await controller.startCamera();
-    if (!mounted) return;
-    await controller.refreshLatestThumbnail();
   }
 
   @override
@@ -113,7 +113,12 @@ class _CameraPageState extends ConsumerState<CameraPage>
     final controller = ref.read(cameraUiControllerProvider.notifier);
     unawaited(_playShutterFlash());
     try {
-      await controller.capturePhoto();
+      final result = await controller.capturePhoto();
+      if (result != null) {
+        ref.read(capturedPhotosProvider.notifier).update((captures) {
+          return List<CameraCaptureResult>.unmodifiable([...captures, result]);
+        });
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -140,24 +145,73 @@ class _CameraPageState extends ConsumerState<CameraPage>
     final hasFilePath = result.filePath != null && result.filePath!.isNotEmpty;
     if (!hasLocalIdentifier && !hasFilePath) return;
 
-    _openingEditor = true;
+    setState(() {
+      _openingEditor = true;
+    });
     final controller = ref.read(cameraUiControllerProvider.notifier);
-    await controller.stopCamera();
-    await controller.disposeCamera();
-    if (!mounted) return;
+    try {
+      await controller.stopCamera();
+      if (!mounted) return;
 
-    final assetId = hasLocalIdentifier
-        ? result.localIdentifier!
-        : 'camera:${result.capturedAtMs}';
-    await Navigator.of(context).pushReplacement(
-      buildEditorRoute(
-        assetId: assetId,
-        sourceFilePath: hasFilePath ? result.filePath : null,
-        initialSimulationId: result.simulationId,
-        initialLookStrength: result.lookStrength,
-        capturedAtMs: result.capturedAtMs,
-      ),
+      final assetId = hasLocalIdentifier
+          ? result.localIdentifier!
+          : 'camera:${result.capturedAtMs}';
+      await Navigator.of(context).push(
+        buildEditorRoute(
+          assetId: assetId,
+          sourceFilePath: hasFilePath ? result.filePath : null,
+          initialSimulationId: result.simulationId,
+          initialLookStrength: result.lookStrength,
+          capturedAtMs: result.capturedAtMs,
+        ),
+      );
+      if (!mounted) return;
+      await controller.startCamera();
+      await controller.refreshLatestThumbnail();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _openingEditor = false;
+        });
+      } else {
+        _openingEditor = false;
+      }
+    }
+  }
+
+  Future<void> _importFromLibrary() async {
+    if (_openingEditor) return;
+    final selected = await _imagePicker.pickImage(
+      source: ImageSource.gallery,
+      requestFullMetadata: false,
     );
+    if (selected == null) return;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final state = ref.read(cameraUiControllerProvider);
+    final result = CameraCaptureResult(
+      filePath: selected.path,
+      simulationId: state.selectedSimulationId,
+      lookStrength: state.lookStrength,
+      mimeType: _mimeTypeForPath(selected.path),
+      width: null,
+      height: null,
+      capturedAtMs: nowMs,
+      captureFormat: CameraCaptureFormat.jpg,
+    );
+    ref.read(capturedPhotosProvider.notifier).update((captures) {
+      return List<CameraCaptureResult>.unmodifiable([...captures, result]);
+    });
+  }
+
+  String _mimeTypeForPath(String path) {
+    final extension = path.split('.').last.toLowerCase();
+    return switch (extension) {
+      'png' => 'image/png',
+      'heic' => 'image/heic',
+      'heif' => 'image/heif',
+      'dng' => 'image/x-adobe-dng',
+      _ => 'image/jpeg',
+    };
   }
 
   Future<void> _handlePreviewTap(Offset localPosition, Size previewSize) async {
@@ -198,8 +252,7 @@ class _CameraPageState extends ConsumerState<CameraPage>
     if (!mounted) return;
     _focusIndicatorTimer?.cancel();
     setState(() {
-      _focusIndicatorPosition = normalized;
-      _showFocusIndicator = true;
+      _showFocusIndicator = false;
     });
   }
 
@@ -211,7 +264,6 @@ class _CameraPageState extends ConsumerState<CameraPage>
     });
     _focusIndicatorTimer = Timer(_focusIndicatorVisibleDuration, () {
       if (!mounted) return;
-      if (ref.read(cameraUiControllerProvider).isAeAfLocked) return;
       setState(() {
         _showFocusIndicator = false;
       });
@@ -229,25 +281,26 @@ class _CameraPageState extends ConsumerState<CameraPage>
     }
   }
 
-  String _lensLabel(CameraLensMode mode) {
-    switch (mode) {
-      case CameraLensMode.wide:
-        return '1X';
-      case CameraLensMode.ultraWide:
-        return '0.5X';
+  void _toggleCaptureFormat(
+    CameraUiState state,
+    CameraUiController controller,
+  ) {
+    final target = state.captureFormat == CameraCaptureFormat.jpg
+        ? CameraCaptureFormat.raw
+        : CameraCaptureFormat.jpg;
+    unawaited(controller.setCaptureFormat(target));
+  }
+
+  void _handleBackPressed() {
+    if (!mounted) return;
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    ref.listen<CameraCaptureResult?>(
-      cameraUiControllerProvider.select((value) => value.lastCapture),
-      (previous, next) {
-        if (next == null) return;
-        unawaited(_openEditorFromCapture(next));
-      },
-    );
-
     if (defaultTargetPlatform != TargetPlatform.iOS) {
       return Scaffold(
         backgroundColor: const Color(0xFF101010),
@@ -268,7 +321,7 @@ class _CameraPageState extends ConsumerState<CameraPage>
 
     final state = ref.watch(cameraUiControllerProvider);
     final controller = ref.read(cameraUiControllerProvider.notifier);
-    final selectedLook = lumaSimulationById(state.selectedSimulationId);
+    final capturedPhotos = ref.watch(capturedPhotosProvider);
     final selectedIndex = lumaSimulationIndexById(state.selectedSimulationId);
 
     return Scaffold(
@@ -300,12 +353,9 @@ class _CameraPageState extends ConsumerState<CameraPage>
               padding: const EdgeInsets.fromLTRB(14, 10, 14, 18),
               child: Column(
                 children: [
-                  CameraTopBar(
-                    onBack: () => Navigator.of(context).pop(),
-                    formatLabel: 'HEIC',
-                    thumbnailBytes: state.latestThumbnail,
-                    onThumbnailTap: () => Navigator.of(context).pop(),
-                  ),
+                  CameraTopBar(onBack: _handleBackPressed, formatLabel: 'HEIC'),
+                  const SizedBox(height: 8),
+                  _CameraLockBanner(isLocked: state.isAeAfLocked),
                   const Spacer(),
                   if (state.errorMessage != null) ...[
                     _CameraErrorPill(message: state.errorMessage!),
@@ -349,7 +399,59 @@ class _CameraPageState extends ConsumerState<CameraPage>
                   const SizedBox(height: 14),
                   Row(
                     children: [
-                      CameraLabelPill(label: selectedLook.name),
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          CameraLibraryButton(
+                            onTap: _importFromLibrary,
+                            thumbnailBytes: state.latestThumbnail,
+                            captureCount: capturedPhotos.length,
+                            enabled:
+                                state.isReady &&
+                                !state.isInitializing &&
+                                !state.isCapturing &&
+                                !_openingEditor,
+                          ),
+                          const SizedBox(height: 8),
+                          GestureDetector(
+                            onTap: _importFromLibrary,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 7,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.38),
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.18),
+                                ),
+                              ),
+                              child: Text(
+                                'Import Photo',
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.9),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0.6,
+                                ),
+                              ),
+                            ),
+                          ),
+                          if (capturedPhotos.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            GestureDetector(
+                              onTap: () => unawaited(
+                                _openEditorFromCapture(capturedPhotos.last),
+                              ),
+                              child: CameraLabelPill(
+                                label: 'LAST ${capturedPhotos.length}',
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                       const Spacer(),
                       CameraShutterButton(
                         enabled:
@@ -365,10 +467,10 @@ class _CameraPageState extends ConsumerState<CameraPage>
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           CameraIconControl(
-                            label: _lensLabel(state.lensMode),
-                            enabled: state.supportsUltraWide,
-                            onTap: state.supportsUltraWide
-                                ? () => unawaited(controller.toggleLensMode())
+                            label: state.captureFormat.label,
+                            enabled: state.supportsRawCapture,
+                            onTap: state.supportsRawCapture
+                                ? () => _toggleCaptureFormat(state, controller)
                                 : null,
                           ),
                           const SizedBox(height: 8),
@@ -555,6 +657,26 @@ class _CameraErrorPill extends StatelessWidget {
           color: Colors.white70,
           fontSize: 11,
           letterSpacing: 0.2,
+        ),
+      ),
+    );
+  }
+}
+
+class _CameraLockBanner extends StatelessWidget {
+  final bool isLocked;
+
+  const _CameraLockBanner({required this.isLocked});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 24,
+      child: AnimatedOpacity(
+        opacity: isLocked ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 180),
+        child: IgnorePointer(
+          child: Center(child: CameraLabelPill(label: 'AE/AF LOCK')),
         ),
       ),
     );

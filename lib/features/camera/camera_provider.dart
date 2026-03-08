@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'camera_controller.dart';
@@ -21,6 +22,11 @@ final cameraUiControllerProvider =
       return controller;
     });
 
+final capturedPhotosProvider =
+    StateProvider.autoDispose<List<CameraCaptureResult>>((ref) {
+      return const <CameraCaptureResult>[];
+    });
+
 class CameraUiController extends StateNotifier<CameraUiState> {
   final CameraBridge _bridge;
   final List<LumaFilmSimulation> _simulations;
@@ -30,7 +36,9 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   double? _pendingExposureBias;
   bool _isApplyingExposureBias = false;
   bool _initialized = false;
-  bool _disposed = false;
+  bool _isDisposed = false;
+  bool _cameraShutdownRequested = false;
+  bool _isCameraRunning = false;
 
   CameraUiController({
     required CameraBridge bridge,
@@ -40,23 +48,24 @@ class CameraUiController extends StateNotifier<CameraUiState> {
        super(CameraUiState.initial(selectedSimulationId: simulations.first.id));
 
   Future<void> initializeCamera() async {
-    if (_initialized || _disposed) return;
+    if (_initialized || _isDisposed) return;
     state = state.copyWith(isInitializing: true, errorMessage: null);
     try {
       final init = await _bridge.initializeCamera();
-      if (_disposed) return;
+      if (_isDisposed || !mounted) return;
       _initialized = true;
       state = state.copyWith(
         isInitializing: false,
         isReady: init.isReady,
         supportsUltraWide: init.supportsUltraWide,
+        supportsRawCapture: init.supportsRawCapture,
         lensMode: init.activeLensMode,
         isAeAfLocked: init.isAeAfLocked,
         lookStrength: init.lookStrength,
         exposureBias: init.exposureBias,
+        captureFormat: init.captureFormat,
         errorMessage: null,
       );
-      _bindHistogramStream();
       await _bridge.setSimulation(
         simulationId: state.selectedSimulationId,
         intensity: _activeIntensity,
@@ -64,7 +73,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
       await _bridge.setLookStrength(state.lookStrength);
       await _bridge.setFlashMode(state.flashMode);
     } catch (error) {
-      if (_disposed) return;
+      if (_isDisposed || !mounted) return;
       state = state.copyWith(
         isInitializing: false,
         isReady: false,
@@ -74,17 +83,21 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   }
 
   Future<void> startCamera() async {
-    if (_disposed || !_initialized || state.isInitializing) return;
+    if (_isDisposed || !_initialized || state.isInitializing) return;
     try {
       await _bridge.startCamera();
-      if (_disposed) return;
+      if (_isDisposed || !mounted) return;
+      _isCameraRunning = true;
+      _bindHistogramStream();
       state = state.copyWith(
         isInitializing: false,
         isReady: true,
+        isAeAfLocked: false,
         errorMessage: null,
       );
     } catch (error) {
-      if (_disposed) return;
+      _isCameraRunning = false;
+      if (_isDisposed || !mounted) return;
       state = state.copyWith(
         isInitializing: false,
         isReady: false,
@@ -94,7 +107,9 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   }
 
   Future<void> stopCamera() async {
-    if (_disposed) return;
+    if (_isDisposed) return;
+    _isCameraRunning = false;
+    await _cancelHistogramSubscription();
     try {
       await _bridge.stopCamera();
     } catch (_) {
@@ -103,7 +118,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   }
 
   Future<void> setSimulation(String simulationId) async {
-    if (_disposed) return;
+    if (_isDisposed) return;
     if (!_simulations.any((s) => s.id == simulationId)) return;
     state = state.copyWith(
       selectedSimulationId: simulationId,
@@ -115,7 +130,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
         intensity: _activeIntensity,
       );
     } catch (error) {
-      if (_disposed) return;
+      if (_isDisposed || !mounted) return;
       state = state.copyWith(errorMessage: 'Could not set look: $error');
     }
   }
@@ -125,7 +140,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     required double y,
     bool lock = false,
   }) async {
-    if (_disposed ||
+    if (_isDisposed ||
         state.isInitializing ||
         !_initialized ||
         !state.isReady ||
@@ -139,7 +154,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     try {
       await _bridge.setFocusPoint(x: normalizedX, y: normalizedY, lock: lock);
     } catch (error) {
-      if (_disposed) return;
+      if (_isDisposed || !mounted) return;
       state = state.copyWith(
         isAeAfLocked: previousLock,
         errorMessage: 'Could not set focus: $error',
@@ -148,7 +163,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   }
 
   Future<void> cycleFlashMode() async {
-    if (_disposed) return;
+    if (_isDisposed) return;
     final next = switch (state.flashMode) {
       CameraFlashMode.auto => CameraFlashMode.off,
       CameraFlashMode.off => CameraFlashMode.on,
@@ -158,33 +173,58 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     try {
       await _bridge.setFlashMode(next);
     } catch (error) {
-      if (_disposed) return;
+      if (_isDisposed || !mounted) return;
       state = state.copyWith(errorMessage: 'Could not set flash: $error');
     }
   }
 
   Future<void> toggleLensMode() async {
-    if (_disposed) return;
+    if (_isDisposed) return;
     if (!state.supportsUltraWide) return;
     final desired = state.lensMode == CameraLensMode.wide
         ? CameraLensMode.ultraWide
         : CameraLensMode.wide;
     try {
       final active = await _bridge.setLensMode(desired);
-      if (_disposed) return;
+      if (_isDisposed || !mounted) return;
       state = state.copyWith(
         lensMode: active,
         isAeAfLocked: false,
         errorMessage: null,
       );
     } catch (error) {
-      if (_disposed) return;
+      if (_isDisposed || !mounted) return;
       state = state.copyWith(errorMessage: 'Could not switch lens: $error');
     }
   }
 
+  Future<void> setCaptureFormat(CameraCaptureFormat format) async {
+    if (_isDisposed ||
+        state.isInitializing ||
+        !_initialized ||
+        !state.isReady) {
+      return;
+    }
+    final previous = state.captureFormat;
+    state = state.copyWith(captureFormat: format, errorMessage: null);
+    try {
+      final applied = await _bridge.setCaptureFormat(format);
+      if (_isDisposed || !mounted) return;
+      state = state.copyWith(captureFormat: applied, errorMessage: null);
+    } catch (error) {
+      if (_isDisposed || !mounted) return;
+      state = state.copyWith(
+        captureFormat: previous,
+        errorMessage: 'Could not set format: $error',
+      );
+    }
+  }
+
   Future<void> setExposureBias(double bias) async {
-    if (_disposed || state.isInitializing || !_initialized || !state.isReady) {
+    if (_isDisposed ||
+        state.isInitializing ||
+        !_initialized ||
+        !state.isReady) {
       return;
     }
     final clamped = bias.clamp(kCameraExposureBiasMin, kCameraExposureBiasMax);
@@ -195,12 +235,12 @@ class CameraUiController extends StateNotifier<CameraUiState> {
 
     _isApplyingExposureBias = true;
     try {
-      while (!_disposed && _pendingExposureBias != null) {
+      while (!_isDisposed && mounted && _pendingExposureBias != null) {
         final requestBias = _pendingExposureBias!;
         _pendingExposureBias = null;
         try {
           final applied = await _bridge.setExposureBias(requestBias);
-          if (_disposed) return;
+          if (_isDisposed || !mounted) return;
           state = state.copyWith(
             exposureBias: applied
                 .clamp(kCameraExposureBiasMin, kCameraExposureBiasMax)
@@ -208,7 +248,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
             errorMessage: null,
           );
         } catch (error) {
-          if (_disposed) return;
+          if (_isDisposed || !mounted) return;
           state = state.copyWith(
             errorMessage: 'Could not set exposure: $error',
           );
@@ -221,7 +261,10 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   }
 
   Future<void> setLookStrength(double strength) async {
-    if (_disposed || state.isInitializing || !_initialized || !state.isReady) {
+    if (_isDisposed ||
+        state.isInitializing ||
+        !_initialized ||
+        !state.isReady) {
       return;
     }
     final clamped = strength.clamp(
@@ -235,12 +278,12 @@ class CameraUiController extends StateNotifier<CameraUiState> {
 
     _isApplyingLookStrength = true;
     try {
-      while (!_disposed && _pendingLookStrength != null) {
+      while (!_isDisposed && mounted && _pendingLookStrength != null) {
         final requestStrength = _pendingLookStrength!;
         _pendingLookStrength = null;
         try {
           final applied = await _bridge.setLookStrength(requestStrength);
-          if (_disposed) return;
+          if (_isDisposed || !mounted) return;
           state = state.copyWith(
             lookStrength: applied
                 .clamp(kCameraLookStrengthMin, kCameraLookStrengthMax)
@@ -248,7 +291,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
             errorMessage: null,
           );
         } catch (error) {
-          if (_disposed) return;
+          if (_isDisposed || !mounted) return;
           state = state.copyWith(errorMessage: 'Could not set look: $error');
           break;
         }
@@ -259,7 +302,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   }
 
   Future<CameraCaptureResult?> capturePhoto() async {
-    if (_disposed ||
+    if (_isDisposed ||
         state.isInitializing ||
         !state.isReady ||
         state.isCapturing) {
@@ -272,7 +315,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     try {
       final result = await _bridge.capturePhoto();
       final thumb = await _bridge.latestThumbnail();
-      if (_disposed) return result;
+      if (_isDisposed || !mounted) return result;
       state = state.copyWith(
         isInitializing: false,
         captureState: CameraCaptureState.idle,
@@ -282,7 +325,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
       );
       return result;
     } catch (error) {
-      if (_disposed) return null;
+      if (_isDisposed || !mounted) return null;
       state = state.copyWith(
         isInitializing: false,
         captureState: CameraCaptureState.idle,
@@ -293,10 +336,10 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   }
 
   Future<void> refreshLatestThumbnail() async {
-    if (_disposed) return;
+    if (_isDisposed) return;
     try {
       final thumb = await _bridge.latestThumbnail();
-      if (_disposed) return;
+      if (_isDisposed || !mounted) return;
       state = state.copyWith(latestThumbnail: thumb);
     } catch (_) {
       // Thumbnail is optional.
@@ -304,10 +347,16 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   }
 
   Future<void> disposeCamera() async {
-    if (_disposed) return;
-    _disposed = true;
-    await _histogramSubscription?.cancel();
-    _histogramSubscription = null;
+    if (_isDisposed) return;
+    _isDisposed = true;
+    _isCameraRunning = false;
+    await _shutdownCamera();
+  }
+
+  Future<void> _shutdownCamera() async {
+    if (_cameraShutdownRequested) return;
+    _cameraShutdownRequested = true;
+    await _cancelHistogramSubscription();
     try {
       await _bridge.stopCamera();
     } catch (_) {
@@ -320,17 +369,28 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     }
   }
 
+  Future<void> _cancelHistogramSubscription() async {
+    final histogramSubscription = _histogramSubscription;
+    _histogramSubscription = null;
+    await histogramSubscription?.cancel();
+  }
+
   double get _activeIntensity {
     final simulation = lumaSimulationById(state.selectedSimulationId);
     return simulation.intensity;
   }
 
   void _bindHistogramStream() {
-    _histogramSubscription?.cancel();
+    if (_isDisposed || !mounted || !_isCameraRunning) return;
+    final previousSubscription = _histogramSubscription;
+    _histogramSubscription = null;
+    unawaited(previousSubscription?.cancel());
     _histogramSubscription = _bridge.histogramStream().listen(
       (bins) {
-        if (_disposed) return;
-        state = state.copyWith(histogram: List<double>.unmodifiable(bins));
+        if (_isDisposed || !mounted || !_isCameraRunning) return;
+        final histogram = List<double>.unmodifiable(bins);
+        if (listEquals(state.histogram, histogram)) return;
+        state = state.copyWith(histogram: histogram);
       },
       onError: (_) {
         // Histogram is optional and should never break capture flow.
@@ -340,7 +400,9 @@ class CameraUiController extends StateNotifier<CameraUiState> {
 
   @override
   void dispose() {
-    unawaited(disposeCamera());
+    _isDisposed = true;
+    _isCameraRunning = false;
+    unawaited(_shutdownCamera());
     super.dispose();
   }
 }
