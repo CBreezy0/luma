@@ -93,7 +93,26 @@ post_install do |installer|
       if target.name == 'in_app_purchase_storekit'
         # Upstream plugin still references StoreKit 1 APIs; silence noisy iOS 18 deprecations.
         config.build_settings['GCC_WARN_INHIBIT_ALL_WARNINGS'] = 'YES'
+        config.build_settings['GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS'] = 'NO'
         config.build_settings['SWIFT_SUPPRESS_WARNINGS'] = 'YES'
+
+        other_cflags = config.build_settings['OTHER_CFLAGS']
+        if other_cflags.is_a?(Array)
+          config.build_settings['OTHER_CFLAGS'] = (other_cflags + ['-Wno-deprecated-declarations']).uniq
+        elsif other_cflags.is_a?(String) && !other_cflags.empty?
+          config.build_settings['OTHER_CFLAGS'] = "#{other_cflags} -Wno-deprecated-declarations"
+        else
+          config.build_settings['OTHER_CFLAGS'] = ['$(inherited)', '-Wno-deprecated-declarations']
+        end
+
+        swift_flags = config.build_settings['OTHER_SWIFT_FLAGS']
+        if swift_flags.is_a?(Array)
+          config.build_settings['OTHER_SWIFT_FLAGS'] = (swift_flags + ['-Xcc', '-Wno-deprecated-declarations']).uniq
+        elsif swift_flags.is_a?(String) && !swift_flags.empty?
+          config.build_settings['OTHER_SWIFT_FLAGS'] = "#{swift_flags} -Xcc -Wno-deprecated-declarations"
+        else
+          config.build_settings['OTHER_SWIFT_FLAGS'] = ['$(inherited)', '-Xcc', '-Wno-deprecated-declarations']
+        end
       end
     end
   end

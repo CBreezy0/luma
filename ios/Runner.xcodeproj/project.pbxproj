@@ -513,6 +513,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
+				TOOLCHAIN_DIR = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain";
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Profile;
@@ -711,6 +712,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
+				TOOLCHAIN_DIR = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain";
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
@@ -743,6 +745,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
+				TOOLCHAIN_DIR = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain";
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;
