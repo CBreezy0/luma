@@ -49,7 +49,9 @@ class _CameraPageState extends ConsumerState<CameraPage>
       initialPage: lumaSimulationIndexById(kDefaultSimulationId),
       viewportFraction: _lookViewportFraction,
     );
-    unawaited(_bootstrap());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_bootstrap());
+    });
   }
 
   Future<void> _bootstrap() async {
