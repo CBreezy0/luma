@@ -1,5 +1,6 @@
 # Uncomment this line to define a global platform for your project
 platform :ios, '13.0'
+inhibit_all_warnings!
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -64,6 +65,14 @@ post_install do |installer|
         config.build_settings['OTHER_SWIFT_FLAGS'] = swift_other.gsub('-warnings-as-errors', '')
       end
 
+      # Xcode Cloud can emit a missing Metal toolchain search path warning.
+      # Keep only stable Swift library paths for iOS builds.
+      config.build_settings['LIBRARY_SEARCH_PATHS'] = [
+        '$(inherited)',
+        '/usr/lib/swift',
+        '$(SDKROOT)/usr/lib/swift',
+      ]
+
       if target.name == 'photo_manager'
         excluded = config.build_settings['EXCLUDED_SOURCE_FILE_NAMES']
         if excluded.is_a?(Array)
@@ -79,6 +88,12 @@ post_install do |installer|
         # Avoid module verification issues with Flutter headers in framework builds.
         config.build_settings['DEFINES_MODULE'] = 'NO'
         config.build_settings['BUILD_LIBRARY_FOR_DISTRIBUTION'] = 'NO'
+      end
+
+      if target.name == 'in_app_purchase_storekit'
+        # Upstream plugin still references StoreKit 1 APIs; silence noisy iOS 18 deprecations.
+        config.build_settings['GCC_WARN_INHIBIT_ALL_WARNINGS'] = 'YES'
+        config.build_settings['SWIFT_SUPPRESS_WARNINGS'] = 'YES'
       end
     end
   end

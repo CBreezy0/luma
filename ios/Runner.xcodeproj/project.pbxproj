@@ -503,6 +503,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.1.0;
+				OTHER_SWIFT_FLAGS = (
+					"$(inherited)",
+					"-Xcc",
+					"-DCI_SILENCE_GL_DEPRECATION",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.cbreezy.luma;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -695,6 +700,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.1.0;
+				OTHER_SWIFT_FLAGS = (
+					"$(inherited)",
+					"-Xcc",
+					"-DCI_SILENCE_GL_DEPRECATION",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.cbreezy.luma;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -723,6 +733,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.1.0;
+				OTHER_SWIFT_FLAGS = (
+					"$(inherited)",
+					"-Xcc",
+					"-DCI_SILENCE_GL_DEPRECATION",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.cbreezy.luma;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
