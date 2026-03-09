@@ -11,8 +11,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image/image.dart' as img;
-import 'package:photo_manager/photo_manager.dart';
 
+import '../export/export_sheet.dart';
+import '../export/native_share_bridge.dart';
 import '../favorites/favorites_provider.dart';
 import '../presets/preset_models.dart';
 import '../presets/preset_ui.dart';
@@ -1595,19 +1596,12 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     );
   }
 
-  Future<void> _exportToPhotos() async {
-    final perm = await PhotoManager.requestPermissionExtend();
-    if (!perm.isAuth && !perm.hasAccess) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Need Photos permission to save')),
-      );
-      return;
-    }
-
+  Future<void> _exportEditedPhoto() async {
+    final action = await showLumaExportSheet(context, itemCount: 1);
+    if (!mounted || action == null) return;
     try {
       final effectiveValues = sanitizeForNativeRenderer(_effectiveValues());
-      await NativeRenderer.exportFullRes(
+      final exportPath = await NativeRenderer.exportFullRes(
         assetId: widget.assetId,
         assetPath: widget.sourceFilePath ?? _sampleImage?.assetPath,
         values: Map<String, double>.from(effectiveValues),
@@ -1617,15 +1611,26 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         straightenDegrees: _straightenDegrees,
         cropRect: _normalizedCropRect(),
       );
+      switch (action) {
+        case LumaExportAction.share:
+          await NativeShareBridge.shareFiles([
+            exportPath,
+          ], subject: 'Luma Export');
+          break;
+        case LumaExportAction.saveToCameraRoll:
+          await NativeShareBridge.saveFilesToPhotos([exportPath]);
+          if (!mounted) return;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Saved to Camera Roll')));
+          break;
+      }
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Saved to Photos')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+      ).showSnackBar(SnackBar(content: Text('Export failed: $e')));
     }
   }
 
@@ -1770,14 +1775,14 @@ class _EditorPageState extends ConsumerState<EditorPage> {
                         ),
                         const Spacer(),
                         GestureDetector(
-                          onTap: _exportToPhotos,
+                          onTap: _exportEditedPhoto,
                           child: Padding(
                             padding: EdgeInsets.symmetric(
                               horizontal: 6,
                               vertical: 8,
                             ),
                             child: Text(
-                              'Save',
+                              'Export',
                               style: TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w600,

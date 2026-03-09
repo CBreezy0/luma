@@ -159,53 +159,34 @@ final class NativeRenderer {
           completion(.failure(NSError(domain: "NativeRenderer", code: -4, userInfo: [NSLocalizedDescriptionKey: "JPEG encode failed"])))
           return
         }
-
-        self.requestAddPermission { ok, err in
-          if let err = err {
-            completion(.failure(err))
-            return
-          }
-          guard ok else {
-            completion(.failure(NSError(domain: "NativeRenderer", code: -5, userInfo: [NSLocalizedDescriptionKey: "No Photos add permission"])))
-            return
-          }
-
-          PHPhotoLibrary.shared().performChanges({
-            let req = PHAssetCreationRequest.forAsset()
-            let opts = PHAssetResourceCreationOptions()
-            opts.uniformTypeIdentifier = "public.jpeg"
-            req.addResource(with: .photo, data: jpeg, options: opts)
-          }, completionHandler: { success, error in
-            if let error = error {
-              completion(.failure(error))
-              return
-            }
-            if success {
-              completion(.success("saved"))
-            } else {
-              completion(.failure(NSError(domain: "NativeRenderer", code: -6, userInfo: [NSLocalizedDescriptionKey: "Save failed"])))
-            }
-          })
+        do {
+          let exportURL = try self.writeRenderedExport(jpegData: jpeg, assetId: assetId)
+          completion(.success(exportURL.path))
+        } catch {
+          completion(.failure(error))
         }
       }
     }
   }
 
-  // MARK: - Photos Permission (iOS 13+ compatible)
+  private func writeRenderedExport(jpegData: Data, assetId: String) throws -> URL {
+    let exportsDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("LumaExports", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: exportsDirectory,
+      withIntermediateDirectories: true
+    )
 
-  private func requestAddPermission(completion: @escaping (Bool, Error?) -> Void) {
-    if #available(iOS 14, *) {
-      PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-        // On iOS 14+, limited exists
-        let ok = (status == .authorized) || (status == .limited)
-        completion(ok, nil)
-      }
-    } else {
-      PHPhotoLibrary.requestAuthorization { status in
-        let ok = (status == .authorized)
-        completion(ok, nil)
-      }
-    }
+    let sanitizedAssetId = assetId
+      .components(separatedBy: CharacterSet.alphanumerics.inverted)
+      .filter { !$0.isEmpty }
+      .joined(separator: "_")
+    let baseName = sanitizedAssetId.isEmpty ? "luma_export" : sanitizedAssetId
+    let fileURL = exportsDirectory
+      .appendingPathComponent("\(baseName)_\(Int(Date().timeIntervalSince1970 * 1000))")
+      .appendingPathExtension("jpg")
+    try jpegData.write(to: fileURL, options: [.atomic])
+    return fileURL
   }
 
   // MARK: - PhotoKit decode (full-res)

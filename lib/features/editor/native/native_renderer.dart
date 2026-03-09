@@ -67,7 +67,7 @@ class NativeRenderer {
     throw StateError('Native renderPreview returned unexpected result type');
   }
 
-  static Future<void> exportFullRes({
+  static Future<String> exportFullRes({
     required String assetId,
     required Map<String, double> values,
     required double quality,
@@ -93,13 +93,17 @@ class NativeRenderer {
       };
     }
 
-    await _channel.invokeMethod<void>('exportFullRes', {
+    final result = await _channel.invokeMethod<Object?>('exportFullRes', {
       'assetId': assetId,
       'values': values,
       'quality': quality,
       if (assetPath != null) 'assetPath': assetPath,
       'crop': crop,
     });
+    if (result is String && result.isNotEmpty) {
+      return result;
+    }
+    throw StateError('Native exportFullRes returned no file path');
   }
 }
 
