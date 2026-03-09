@@ -19,6 +19,8 @@ enum CameraLensMode { wide, ultraWide }
 
 enum CameraFlashMode { auto, off, on }
 
+enum CameraCaptureFormat { jpg, raw }
+
 enum CameraCaptureState { idle, capturing }
 
 const double kCameraExposureBiasMin = -1.5;
@@ -36,12 +38,14 @@ class CameraCaptureResult {
   final int? width;
   final int? height;
   final int capturedAtMs;
+  final CameraCaptureFormat captureFormat;
 
   const CameraCaptureResult({
     required this.simulationId,
     required this.lookStrength,
     required this.mimeType,
     required this.capturedAtMs,
+    required this.captureFormat,
     this.localIdentifier,
     this.filePath,
     this.width,
@@ -59,7 +63,7 @@ class CameraCaptureResult {
       simulationId:
           (map['simulationId'] as String?) ??
           (map['lookId'] as String?) ??
-          'slate',
+          'original',
       lookStrength:
           (map['lookStrength'] as num?)
               ?.toDouble()
@@ -73,6 +77,9 @@ class CameraCaptureResult {
           (map['capturedAt'] as num?)?.toInt() ??
           (map['savedAtMs'] as num?)?.toInt() ??
           DateTime.now().millisecondsSinceEpoch,
+      captureFormat: cameraCaptureFormatFromWire(
+        map['captureFormat'] as String?,
+      ),
     );
   }
 }
@@ -90,6 +97,8 @@ class CameraUiState {
   final bool isInitializing;
   final bool isReady;
   final bool supportsUltraWide;
+  final bool supportsRawCapture;
+  final CameraCaptureFormat captureFormat;
   final String? errorMessage;
   final Uint8List? latestThumbnail;
   final CameraCaptureResult? lastCapture;
@@ -106,6 +115,8 @@ class CameraUiState {
     required this.isInitializing,
     required this.isReady,
     required this.supportsUltraWide,
+    required this.supportsRawCapture,
+    required this.captureFormat,
     this.errorMessage,
     this.latestThumbnail,
     this.lastCapture,
@@ -124,6 +135,8 @@ class CameraUiState {
       isInitializing: true,
       isReady: false,
       supportsUltraWide: false,
+      supportsRawCapture: false,
+      captureFormat: CameraCaptureFormat.jpg,
     );
   }
 
@@ -141,6 +154,8 @@ class CameraUiState {
     bool? isInitializing,
     bool? isReady,
     bool? supportsUltraWide,
+    bool? supportsRawCapture,
+    CameraCaptureFormat? captureFormat,
     Object? errorMessage = _cameraUnset,
     Object? latestThumbnail = _cameraUnset,
     Object? lastCapture = _cameraUnset,
@@ -157,6 +172,8 @@ class CameraUiState {
       isInitializing: isInitializing ?? this.isInitializing,
       isReady: isReady ?? this.isReady,
       supportsUltraWide: supportsUltraWide ?? this.supportsUltraWide,
+      supportsRawCapture: supportsRawCapture ?? this.supportsRawCapture,
+      captureFormat: captureFormat ?? this.captureFormat,
       errorMessage: identical(errorMessage, _cameraUnset)
           ? this.errorMessage
           : errorMessage as String?,
@@ -196,6 +213,26 @@ extension CameraLensModeCodec on CameraLensMode {
   }
 }
 
+extension CameraCaptureFormatCodec on CameraCaptureFormat {
+  String get wireValue {
+    switch (this) {
+      case CameraCaptureFormat.jpg:
+        return 'jpg';
+      case CameraCaptureFormat.raw:
+        return 'raw';
+    }
+  }
+
+  String get label {
+    switch (this) {
+      case CameraCaptureFormat.jpg:
+        return 'JPG';
+      case CameraCaptureFormat.raw:
+        return 'RAW';
+    }
+  }
+}
+
 CameraFlashMode cameraFlashModeFromWire(String? value) {
   switch (value) {
     case 'off':
@@ -213,5 +250,14 @@ CameraLensMode cameraLensModeFromWire(String? value) {
       return CameraLensMode.ultraWide;
     default:
       return CameraLensMode.wide;
+  }
+}
+
+CameraCaptureFormat cameraCaptureFormatFromWire(String? value) {
+  switch (value) {
+    case 'raw':
+      return CameraCaptureFormat.raw;
+    default:
+      return CameraCaptureFormat.jpg;
   }
 }

@@ -33,4 +33,22 @@ class FavoritesController extends StateNotifier<Set<String>> {
     state = next;
     await _repo.saveFavorites(next);
   }
+
+  Future<void> setFavorite(String id, bool isFavorite) async {
+    final next = Set<String>.from(state);
+    if (isFavorite) {
+      next.add(id);
+    } else {
+      next.remove(id);
+    }
+    state = next;
+    await _repo.saveFavorites(next);
+  }
+
+  Future<void> removeFavorites(Iterable<String> ids) async {
+    final next = Set<String>.from(state);
+    next.removeAll(ids);
+    state = next;
+    await _repo.saveFavorites(next);
+  }
 }

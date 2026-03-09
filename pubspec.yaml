@@ -16,8 +16,12 @@ dependencies:
 
   # Media / editing
   photo_manager: ^3.8.3
+  image_picker: ^1.1.2
   image_cropper: ^8.0.2
   image: ^4.2.0
+  isar: ^3.1.0+1
+  isar_flutter_libs: ^3.1.0+1
+  path_provider: ^2.1.4
   vector_math: ^2.1.4
   shared_preferences: ^2.2.3
 
@@ -34,6 +38,8 @@ dev_dependencies:
 
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.2
+  build_runner: ^2.4.13
+  isar_generator: ^3.1.0+1
   
 flutter_launcher_icons:
   ios: true
@@ -49,7 +55,7 @@ flutter_native_splash:
   color: "#FFFFFF"
   color_dark: "#000000"
 
-  image: assets/branding/wordmark.png
+  image: assets/branding/luma_mark_light.png
   branding: assets/branding/tagline.png
 
   android_gravity: center

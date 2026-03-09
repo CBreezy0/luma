@@ -1,8 +1,9 @@
 import 'camera_models.dart';
 
-const String kDefaultSimulationId = 'slate';
+const String kDefaultSimulationId = 'original';
 
 const List<LumaFilmSimulation> kLumaFilmSimulations = [
+  LumaFilmSimulation(id: 'original', name: 'Original', intensity: 1.0),
   LumaFilmSimulation(id: 'slate', name: 'Slate', intensity: 1.0),
   LumaFilmSimulation(id: 'ember', name: 'Ember', intensity: 1.0),
   LumaFilmSimulation(id: 'bloom', name: 'Bloom', intensity: 1.0),

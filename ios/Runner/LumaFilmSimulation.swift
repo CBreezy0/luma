@@ -2,9 +2,10 @@ import CoreImage
 import Foundation
 
 enum LumaFilmSimulation {
-  static let defaultSimulationId = "slate"
+  static let defaultSimulationId = "original"
 
   static let supportedSimulationIds: Set<String> = [
+    "original",
     "slate",
     "ember",
     "bloom",
@@ -23,6 +24,7 @@ enum LumaFilmSimulation {
     let id = supportedSimulationIds.contains(simulationId)
       ? simulationId
       : defaultSimulationId
+    if id == defaultSimulationId { return image }
     let lookStrength = clamp01(strength)
     if lookStrength < 0.0001 { return image }
 

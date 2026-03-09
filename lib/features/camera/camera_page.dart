@@ -9,6 +9,8 @@ import 'package:image_picker/image_picker.dart';
 import 'camera_models.dart';
 import 'camera_provider.dart';
 import 'camera_ui.dart';
+import 'luma_gallery_page.dart';
+import '../library/library_provider.dart';
 import '../editor/editor_navigation.dart';
 import 'camera_focus_mapping.dart';
 import 'look_registry.dart';
@@ -115,6 +117,7 @@ class _CameraPageState extends ConsumerState<CameraPage>
     try {
       final result = await controller.capturePhoto();
       if (result != null) {
+        await ref.read(lumaLibraryProvider.notifier).saveCapturedPhoto(result);
         ref.read(capturedPhotosProvider.notifier).update((captures) {
           return List<CameraCaptureResult>.unmodifiable([...captures, result]);
         });
@@ -181,25 +184,50 @@ class _CameraPageState extends ConsumerState<CameraPage>
 
   Future<void> _importFromLibrary() async {
     if (_openingEditor) return;
-    final selected = await _imagePicker.pickImage(
-      source: ImageSource.gallery,
-      requestFullMetadata: false,
-    );
-    if (selected == null) return;
+    List<XFile> selected = const <XFile>[];
+    try {
+      selected = await _imagePicker.pickMultiImage(requestFullMetadata: false);
+    } catch (_) {
+      final fallback = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        requestFullMetadata: false,
+      );
+      if (fallback != null) {
+        selected = <XFile>[fallback];
+      }
+    }
+    if (selected.isEmpty) return;
+
+    final paths = selected
+        .map((item) => item.path)
+        .where((path) => path.isNotEmpty)
+        .toList(growable: false);
+    if (paths.isEmpty) return;
+
+    await ref.read(lumaLibraryProvider.notifier).importPhotoPaths(paths);
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final state = ref.read(cameraUiControllerProvider);
-    final result = CameraCaptureResult(
-      filePath: selected.path,
-      simulationId: state.selectedSimulationId,
-      lookStrength: state.lookStrength,
-      mimeType: _mimeTypeForPath(selected.path),
-      width: null,
-      height: null,
-      capturedAtMs: nowMs,
-      captureFormat: CameraCaptureFormat.jpg,
-    );
     ref.read(capturedPhotosProvider.notifier).update((captures) {
-      return List<CameraCaptureResult>.unmodifiable([...captures, result]);
+      final importedResults = <CameraCaptureResult>[];
+      for (var i = 0; i < paths.length; i += 1) {
+        final path = paths[i];
+        importedResults.add(
+          CameraCaptureResult(
+            filePath: path,
+            simulationId: state.selectedSimulationId,
+            lookStrength: state.lookStrength,
+            mimeType: _mimeTypeForPath(path),
+            width: null,
+            height: null,
+            capturedAtMs: nowMs + i,
+            captureFormat: CameraCaptureFormat.jpg,
+          ),
+        );
+      }
+      return List<CameraCaptureResult>.unmodifiable([
+        ...captures,
+        ...importedResults,
+      ]);
     });
   }
 
@@ -291,12 +319,27 @@ class _CameraPageState extends ConsumerState<CameraPage>
     unawaited(controller.setCaptureFormat(target));
   }
 
+  Future<void> _openGallery() async {
+    if (_openingEditor) return;
+    final controller = ref.read(cameraUiControllerProvider.notifier);
+    await controller.stopCamera();
+    if (!mounted) return;
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const LumaGalleryPage()));
+    if (!mounted) return;
+    await controller.startCamera();
+    await controller.refreshLatestThumbnail();
+  }
+
   void _handleBackPressed() {
     if (!mounted) return;
     final navigator = Navigator.of(context);
     if (navigator.canPop()) {
       navigator.pop();
+      return;
     }
+    unawaited(_openGallery());
   }
 
   @override
@@ -404,7 +447,7 @@ class _CameraPageState extends ConsumerState<CameraPage>
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           CameraLibraryButton(
-                            onTap: _importFromLibrary,
+                            onTap: _openGallery,
                             thumbnailBytes: state.latestThumbnail,
                             captureCount: capturedPhotos.length,
                             enabled:

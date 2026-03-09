@@ -15,6 +15,11 @@ enum CameraControllerFlashMode: String {
   case on
 }
 
+enum CameraControllerCaptureFormat: String {
+  case jpg
+  case raw
+}
+
 enum CameraControllerError: LocalizedError {
   case cameraPermissionDenied
   case noBackCamera
@@ -53,8 +58,17 @@ struct FocusPointUpdate {
   let isLocked: Bool
 }
 
+final class CameraPreviewContainerView: UIView {
+  var onLayout: (() -> Void)?
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    onLayout?()
+  }
+}
+
 final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCapturePhotoCaptureDelegate {
-  let previewView = UIView()
+  let previewView = CameraPreviewContainerView()
 
   private let previewImageView = UIImageView()
   private let focusPointConversionLayer = AVCaptureVideoPreviewLayer()
@@ -69,6 +83,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   private let ciContext: CIContext
   private let lutLoader = LumaLUTLoader.shared
   private let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+  private let previewHighlightShadowFilter = CIFilter(name: "CIHighlightShadowAdjust")
+  private let previewColorControlsFilter = CIFilter(name: "CIColorControls")
 
   private var videoInput: AVCaptureDeviceInput?
   private var isConfigured = false
@@ -82,8 +98,11 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   private var _exposureBias = 0.0
   private var _lensMode: CameraControllerLensMode = .wide
   private var _flashMode: CameraControllerFlashMode = .auto
+  private var _captureFormat: CameraControllerCaptureFormat = .jpg
   private var _captureVideoOrientation: AVCaptureVideoOrientation = .portrait
   private var _captureCameraPosition: AVCaptureDevice.Position = .back
+  private var _captureFormatForCurrentPhoto: CameraControllerCaptureFormat = .jpg
+  private var _didTemporarilyLockExposureForCapture = false
   private var _latestThumbnailData: Data?
   var onHistogramUpdated: (([Double]) -> Void)?
   private let tempCapturePrefix = "luma_capture_"
@@ -103,6 +122,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   private var histogramComputeEMA: TimeInterval = 0
   private var previewFrameIntervalEMA: TimeInterval = 0
   private var previewLastFrameTimestamp: CFAbsoluteTime = 0
+  private var pinchZoomStartFactor: CGFloat = 1.0
 
   override init() {
     ciContext = CIContext(options: [
@@ -157,6 +177,9 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
           completion(.failure(CameraControllerError.sessionNotConfigured))
         }
         return
+      }
+      if let device = self.videoInput?.device {
+        self.applyDefaultAutoFocusAndExposure(to: device)
       }
       if !self.session.isRunning {
         self.session.startRunning()
@@ -284,6 +307,26 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     }
   }
 
+  func setCaptureFormat(
+    _ format: CameraControllerCaptureFormat,
+    completion: @escaping (Result<CameraControllerCaptureFormat, Error>) -> Void
+  ) {
+    sessionQueue.async {
+      let active: CameraControllerCaptureFormat
+      if format == .raw, !self.supportsRawCapture() {
+        active = .jpg
+      } else {
+        active = format
+      }
+      self.stateQueue.sync {
+        self._captureFormat = active
+      }
+      DispatchQueue.main.async {
+        completion(.success(active))
+      }
+    }
+  }
+
   func setExposureBias(
     _ bias: Double,
     completion: @escaping (Result<Double, Error>) -> Void
@@ -324,6 +367,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     _ mode: CameraControllerLensMode,
     completion: @escaping (Result<CameraControllerLensMode, Error>) -> Void
   ) {
+    _ = mode
     sessionQueue.async {
       guard self.isConfigured else {
         DispatchQueue.main.async {
@@ -331,22 +375,9 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
         return
       }
-      let target = self.availableDevice(for: mode) != nil ? mode : .wide
-      do {
-        if let device = self.availableDevice(for: target) {
-          try self.switchInput(to: device)
-        }
-        self.stateQueue.sync {
-          self._lensMode = target
-          self._isAeAfLocked = false
-        }
-        DispatchQueue.main.async {
-          completion(.success(target))
-        }
-      } catch {
-        DispatchQueue.main.async {
-          completion(.failure(error))
-        }
+      let active = self.stateQueue.sync { self._lensMode }
+      DispatchQueue.main.async {
+        completion(.success(active))
       }
     }
   }
@@ -383,6 +414,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         self._captureCameraPosition = activePosition
       }
 
+      self.lockExposureForCaptureIfNeeded()
       self.triggerShutterHaptic()
       let settings = self.makePhotoSettings()
       self.photoOutput.capturePhoto(with: settings, delegate: self)
@@ -395,6 +427,10 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
   func supportsUltraWide() -> Bool {
     return availableDevice(for: .ultraWide) != nil
+  }
+
+  func supportsRawCapture() -> Bool {
+    return !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty
   }
 
   func activeLensMode() -> CameraControllerLensMode {
@@ -413,12 +449,16 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     return stateQueue.sync { _exposureBias }
   }
 
+  func captureFormat() -> CameraControllerCaptureFormat {
+    return stateQueue.sync { _captureFormat }
+  }
+
   // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
 
   func captureOutput(
     _: AVCaptureOutput,
     didOutput sampleBuffer: CMSampleBuffer,
-    from connection: AVCaptureConnection
+    from _: AVCaptureConnection
   ) {
     let frameTimestamp = CFAbsoluteTimeGetCurrent()
     stateQueue.sync {
@@ -433,13 +473,17 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       let simulationState = stateQueue.sync {
         (_simulationId, _simulationIntensity, _lookStrength)
       }
-      let videoOrientation = connection.videoOrientation
-      let cameraPosition = videoInput?.device.position ?? .back
-      let frameOrientation = ciImageOrientation(
-        for: videoOrientation,
-        cameraPosition: cameraPosition
+      var image = CIImage(cvPixelBuffer: pixelBuffer)
+      image = applyPreviewToneMapping(image)
+      let shouldApplyColorControls = stateQueue.sync { () -> Bool in
+        guard previewFrameIntervalEMA > 0 else { return true }
+        let fps = 1.0 / previewFrameIntervalEMA
+        return fps >= previewFpsThrottleThreshold
+      }
+      image = applyPreviewColorControls(
+        image,
+        applyEnhancement: shouldApplyColorControls
       )
-      var image = CIImage(cvPixelBuffer: pixelBuffer).oriented(frameOrientation)
       image = LumaFilmSimulation.apply(
         simulationId: simulationState.0,
         to: image,
@@ -471,11 +515,17 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     error: Error?
   ) {
     if let error {
-      finishCapture(.failure(error))
+      sessionQueue.async {
+        self.restoreExposureAfterCaptureIfNeeded()
+        self.finishCapture(.failure(error))
+      }
       return
     }
     guard let photoData = photo.fileDataRepresentation() else {
-      finishCapture(.failure(CameraControllerError.photoDataUnavailable))
+      sessionQueue.async {
+        self.restoreExposureAfterCaptureIfNeeded()
+        self.finishCapture(.failure(CameraControllerError.photoDataUnavailable))
+      }
       return
     }
 
@@ -485,12 +535,60 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         _simulationIntensity,
         _lookStrength,
         _captureVideoOrientation,
-        _captureCameraPosition
+        _captureCameraPosition,
+        _captureFormatForCurrentPhoto
       )
     }
     let sourceMetadata = normalizedMetadata(from: photoData)
     sessionQueue.async {
       autoreleasepool {
+        self.restoreExposureAfterCaptureIfNeeded()
+        let captureOrientation = self.ciImageOrientation(
+          for: captureState.3,
+          cameraPosition: captureState.4
+        )
+
+        if captureState.5 == .raw {
+          let orientedImage = CIImage(
+            data: photoData,
+            options: [.applyOrientationProperty: false]
+          )?.oriented(captureOrientation)
+          guard let tempPath = self.writeTempCapture(data: photoData, fileExtension: "dng") else {
+            self.finishCapture(.failure(CameraControllerError.photoEncodingFailed))
+            return
+          }
+          let capturedAtMs = Int(Date().timeIntervalSince1970 * 1000)
+          if let orientedImage {
+            self.storeLatestThumbnail(from: orientedImage)
+          }
+          self.saveCaptureToPhotos(data: photoData, uti: "com.adobe.raw-image") { saveResult in
+            let localIdentifier: String?
+            switch saveResult {
+            case .success(let id):
+              localIdentifier = id
+            case .failure(let error):
+              #if DEBUG
+              print("⚠️ CameraViewController: save RAW to Photos failed, using temp file: \(error.localizedDescription)")
+              #endif
+              localIdentifier = nil
+            }
+            let payload: [String: Any] = [
+              "localIdentifier": localIdentifier as Any,
+              "filePath": tempPath,
+              "simulationId": captureState.0,
+              "lookStrength": captureState.2,
+              "mimeType": "image/x-adobe-dng",
+              "width": orientedImage.map { Int($0.extent.width.rounded()) } as Any,
+              "height": orientedImage.map { Int($0.extent.height.rounded()) } as Any,
+              "captureFormat": CameraControllerCaptureFormat.raw.rawValue,
+              "capturedAt": capturedAtMs,
+              "savedAtMs": capturedAtMs
+            ]
+            self.finishCapture(.success(payload))
+          }
+          return
+        }
+
         guard
           let ciImage = CIImage(
             data: photoData,
@@ -500,15 +598,63 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
           self.finishCapture(.failure(CameraControllerError.photoDataUnavailable))
           return
         }
-
-        let captureOrientation = self.ciImageOrientation(
-          for: captureState.3,
-          cameraPosition: captureState.4
-        )
         let orientedImage = ciImage.oriented(captureOrientation)
+        let toneMappedImage = self.applyCaptureToneMapping(orientedImage)
+        let colorAdjustedImage = self.applyCaptureColorControls(toneMappedImage)
+
+        if captureState.0 == LumaFilmSimulation.defaultSimulationId {
+          guard
+            let encoded = self.encodeCaptureImage(
+              colorAdjustedImage,
+              sourceMetadata: sourceMetadata,
+              captureFormat: captureState.5
+            )
+          else {
+            self.finishCapture(.failure(CameraControllerError.photoEncodingFailed))
+            return
+          }
+          guard
+            let tempPath = self.writeTempCapture(
+              data: encoded.data,
+              fileExtension: encoded.fileExtension
+            )
+          else {
+            self.finishCapture(.failure(CameraControllerError.photoEncodingFailed))
+            return
+          }
+          let capturedAtMs = Int(Date().timeIntervalSince1970 * 1000)
+          self.storeLatestThumbnail(from: colorAdjustedImage)
+          self.saveCaptureToPhotos(data: encoded.data, uti: encoded.uti) { saveResult in
+            let localIdentifier: String?
+            switch saveResult {
+            case .success(let id):
+              localIdentifier = id
+            case .failure(let error):
+              #if DEBUG
+              print("⚠️ CameraViewController: save tone-mapped photo to Photos failed, using temp file: \(error.localizedDescription)")
+              #endif
+              localIdentifier = nil
+            }
+            let payload: [String: Any] = [
+              "localIdentifier": localIdentifier as Any,
+              "filePath": tempPath,
+              "simulationId": captureState.0,
+              "lookStrength": captureState.2,
+              "mimeType": encoded.mimeType,
+              "width": Int(colorAdjustedImage.extent.width.rounded()),
+              "height": Int(colorAdjustedImage.extent.height.rounded()),
+              "captureFormat": CameraControllerCaptureFormat.jpg.rawValue,
+              "capturedAt": capturedAtMs,
+              "savedAtMs": capturedAtMs
+            ]
+            self.finishCapture(.success(payload))
+          }
+          return
+        }
+
         let processed = LumaFilmSimulation.apply(
           simulationId: captureState.0,
-          to: orientedImage,
+          to: colorAdjustedImage,
           intensity: captureState.1,
           strength: captureState.2,
           lutLoader: self.lutLoader
@@ -517,7 +663,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         guard
           let encoded = self.encodeCaptureImage(
             processed,
-            sourceMetadata: sourceMetadata
+            sourceMetadata: sourceMetadata,
+            captureFormat: captureState.5
           )
         else {
           self.finishCapture(.failure(CameraControllerError.photoEncodingFailed))
@@ -555,6 +702,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
             "mimeType": encoded.mimeType,
             "width": Int(processed.extent.width.rounded()),
             "height": Int(processed.extent.height.rounded()),
+            "captureFormat": CameraControllerCaptureFormat.jpg.rawValue,
             "capturedAt": capturedAtMs,
             "savedAtMs": capturedAtMs
           ]
@@ -569,6 +717,16 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   private func configurePreviewView() {
     previewView.backgroundColor = .black
     previewView.clipsToBounds = true
+    previewView.isUserInteractionEnabled = true
+    previewView.onLayout = { [weak self] in
+      self?.updateVideoOrientation()
+    }
+
+    let pinchRecognizer = UIPinchGestureRecognizer(
+      target: self,
+      action: #selector(handlePreviewPinchGesture(_:))
+    )
+    previewView.addGestureRecognizer(pinchRecognizer)
 
     previewImageView.translatesAutoresizingMaskIntoConstraints = false
     previewImageView.backgroundColor = .black
@@ -591,10 +749,12 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         let payload: [String: Any] = [
           "isReady": true,
           "supportsUltraWide": self.supportsUltraWide(),
+          "supportsRawCapture": self.supportsRawCapture(),
           "activeLensMode": self.activeLensMode().rawValue,
           "isAeAfLocked": self.isAeAfLocked(),
           "lookStrength": self.lookStrength(),
           "exposureBias": self.exposureBias(),
+          "captureFormat": self.captureFormat().rawValue,
         ]
         DispatchQueue.main.async {
           completion(.success(payload))
@@ -610,7 +770,18 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
         self.session.beginConfiguration()
         didBeginConfiguration = true
-        self.session.sessionPreset = .photo
+        defer {
+          if didBeginConfiguration {
+            self.session.commitConfiguration()
+            didBeginConfiguration = false
+          }
+        }
+
+        if self.session.canSetSessionPreset(.photo) {
+          self.session.sessionPreset = .photo
+        } else {
+          self.session.sessionPreset = .high
+        }
 
         let input = try AVCaptureDeviceInput(device: device)
         guard self.session.canAddInput(input) else {
@@ -618,6 +789,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
         self.session.addInput(input)
         self.videoInput = input
+        self.applyDefaultAutoFocusAndExposure(to: device)
         let appliedExposure =
           (try? self.applyExposureBias(self.exposureBias(), to: device))
           ?? self.exposureBias()
@@ -627,6 +799,9 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
         self.session.addOutput(self.photoOutput)
         self.photoOutput.isHighResolutionCaptureEnabled = true
+        if #available(iOS 13.0, *) {
+          self.photoOutput.maxPhotoQualityPrioritization = .quality
+        }
 
         self.videoOutput.alwaysDiscardsLateVideoFrames = true
         self.videoOutput.videoSettings = [
@@ -639,8 +814,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
         self.session.addOutput(self.videoOutput)
 
-        self.applyVideoOrientation(self.currentPreferredVideoOrientation())
-
+        self.updateVideoOrientation()
+        didBeginConfiguration = false
         self.session.commitConfiguration()
         self.stateQueue.sync {
           self._lensMode = .wide
@@ -651,18 +826,17 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         let payload: [String: Any] = [
           "isReady": true,
           "supportsUltraWide": self.supportsUltraWide(),
+          "supportsRawCapture": self.supportsRawCapture(),
           "activeLensMode": CameraControllerLensMode.wide.rawValue,
           "isAeAfLocked": self.isAeAfLocked(),
           "lookStrength": self.lookStrength(),
           "exposureBias": appliedExposure,
+          "captureFormat": self.captureFormat().rawValue,
         ]
         DispatchQueue.main.async {
           completion(.success(payload))
         }
       } catch {
-        if didBeginConfiguration {
-          self.session.commitConfiguration()
-        }
         DispatchQueue.main.async {
           completion(.failure(error))
         }
@@ -671,24 +845,35 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   }
 
   private func availableDevice(for mode: CameraControllerLensMode) -> AVCaptureDevice? {
-    let preferredType: AVCaptureDevice.DeviceType
+    let preferredTypes: [AVCaptureDevice.DeviceType]
     switch mode {
     case .wide:
-      preferredType = .builtInWideAngleCamera
+      if #available(iOS 13.0, *) {
+        preferredTypes = [
+          .builtInTripleCamera,
+          .builtInDualWideCamera,
+          .builtInDualCamera,
+          .builtInWideAngleCamera,
+        ]
+      } else {
+        preferredTypes = [.builtInWideAngleCamera]
+      }
     case .ultraWide:
-      preferredType = .builtInUltraWideCamera
+      preferredTypes = [.builtInUltraWideCamera]
     }
+
     let discovery = AVCaptureDevice.DiscoverySession(
-      deviceTypes: [preferredType, .builtInWideAngleCamera],
+      deviceTypes: preferredTypes,
       mediaType: .video,
       position: .back
     )
-    return discovery.devices.first { device in
-      if mode == .ultraWide {
-        return device.deviceType == .builtInUltraWideCamera
+
+    for type in preferredTypes {
+      if let matched = discovery.devices.first(where: { $0.deviceType == type }) {
+        return matched
       }
-      return device.deviceType == .builtInWideAngleCamera
-    } ?? discovery.devices.first
+    }
+    return discovery.devices.first
   }
 
   private func switchInput(to device: AVCaptureDevice) throws {
@@ -712,19 +897,45 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     videoInput = newInput
     let requestedBias = stateQueue.sync { _exposureBias }
     _ = try? applyExposureBias(requestedBias, to: device)
+    applyDefaultAutoFocusAndExposure(to: device)
 
-    applyVideoOrientation(currentPreferredVideoOrientation())
+    updateVideoOrientation()
     session.commitConfiguration()
   }
 
   private func makePhotoSettings() -> AVCapturePhotoSettings {
-    let settings: AVCapturePhotoSettings
-    if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+    let requestedFormat = stateQueue.sync { _captureFormat }
+    var activeFormat: CameraControllerCaptureFormat = .jpg
+    var settings = AVCapturePhotoSettings()
+    if requestedFormat == .raw,
+       let rawType = photoOutput.availableRawPhotoPixelFormatTypes.first
+    {
+      settings = AVCapturePhotoSettings(rawPixelFormatType: rawType)
+      activeFormat = .raw
+    } else if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
       settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
-    } else {
-      settings = AVCapturePhotoSettings()
+      activeFormat = .jpg
+    } else if photoOutput.availablePhotoCodecTypes.contains(.jpeg) {
+      settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
+      activeFormat = .jpg
     }
     settings.isHighResolutionPhotoEnabled = true
+    if #available(iOS 13.0, *) {
+      settings.photoQualityPrioritization = .quality
+    }
+    if photoOutput.isStillImageStabilizationSupported {
+      settings.isAutoStillImageStabilizationEnabled = true
+    }
+    if photoOutput.isVirtualDeviceFusionSupported {
+      settings.isAutoVirtualDeviceFusionEnabled = true
+    }
+    if photoOutput.isDepthDataDeliverySupported {
+      settings.isDepthDataDeliveryEnabled = false
+    }
+    stateQueue.sync {
+      _captureFormatForCurrentPhoto = activeFormat
+      _captureFormat = activeFormat
+    }
 
     let flash = stateQueue.sync { _flashMode }
     if let device = videoInput?.device, device.isFlashAvailable {
@@ -749,7 +960,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
   private func encodeCaptureImage(
     _ image: CIImage,
-    sourceMetadata: [String: Any]
+    sourceMetadata: [String: Any],
+    captureFormat: CameraControllerCaptureFormat
   ) -> EncodedCapture? {
     guard let cgImage = ciContext.createCGImage(image, from: image.extent) else {
       return nil
@@ -759,13 +971,18 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     metadata[kCGImagePropertyOrientation as String] = 1
 
     let targets: [(uti: String, fileExtension: String, mimeType: String)]
-    if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
-      targets = [
-        ("public.heic", "heic", "image/heic"),
-        ("public.jpeg", "jpg", "image/jpeg"),
-      ]
-    } else {
-      targets = [("public.jpeg", "jpg", "image/jpeg")]
+    switch captureFormat {
+    case .jpg:
+      if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+        targets = [
+          ("public.heic", "heic", "image/heic"),
+          ("public.jpeg", "jpg", "image/jpeg"),
+        ]
+      } else {
+        targets = [("public.jpeg", "jpg", "image/jpeg")]
+      }
+    case .raw:
+      return nil
     }
 
     for target in targets {
@@ -773,7 +990,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         cgImage,
         uti: target.uti,
         metadata: metadata,
-        compressionQuality: 0.95
+        compressionQuality: 1.0
       ) {
         return EncodedCapture(
           data: data,
@@ -815,6 +1032,50 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     return mutableData as Data
   }
 
+  private func applyCaptureToneMapping(_ image: CIImage) -> CIImage {
+    guard let filter = CIFilter(name: "CIHighlightShadowAdjust") else {
+      return image
+    }
+    filter.setValue(image, forKey: kCIInputImageKey)
+    filter.setValue(0.7, forKey: "inputShadowAmount")
+    filter.setValue(0.25, forKey: "inputHighlightAmount")
+    return filter.outputImage ?? image
+  }
+
+  private func applyCaptureColorControls(_ image: CIImage) -> CIImage {
+    guard let colorFilter = CIFilter(name: "CIColorControls") else {
+      return image
+    }
+    colorFilter.setValue(image, forKey: kCIInputImageKey)
+    colorFilter.setValue(1.05, forKey: kCIInputSaturationKey)
+    colorFilter.setValue(1.02, forKey: kCIInputContrastKey)
+    return colorFilter.outputImage ?? image
+  }
+
+  private func applyPreviewToneMapping(_ image: CIImage) -> CIImage {
+    guard let filter = previewHighlightShadowFilter else {
+      return image
+    }
+    filter.setValue(image, forKey: kCIInputImageKey)
+    // Subtle neutral tone mapping to better match polished camera previews.
+    filter.setValue(0.58, forKey: "inputShadowAmount")
+    filter.setValue(0.18, forKey: "inputHighlightAmount")
+    return filter.outputImage ?? image
+  }
+
+  private func applyPreviewColorControls(
+    _ image: CIImage,
+    applyEnhancement: Bool
+  ) -> CIImage {
+    guard applyEnhancement, let filter = previewColorControlsFilter else {
+      return image
+    }
+    filter.setValue(image, forKey: kCIInputImageKey)
+    filter.setValue(1.03, forKey: kCIInputSaturationKey)
+    filter.setValue(1.04, forKey: kCIInputContrastKey)
+    return filter.outputImage ?? image
+  }
+
   private func storeLatestThumbnail(from image: CIImage) {
     let extent = image.extent
     guard extent.width > 0, extent.height > 0 else { return }
@@ -831,31 +1092,138 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
   @objc
   private func handleDeviceOrientationDidChange() {
-    let orientation = currentPreferredVideoOrientation()
+    updateVideoOrientation()
+  }
+
+  @objc
+  private func handlePreviewTapGesture(_ recognizer: UITapGestureRecognizer) {
+    guard recognizer.state == .ended else { return }
+    let tapPoint = recognizer.location(in: previewView)
+    let previewBounds = currentPreviewBounds()
     sessionQueue.async {
-      self.applyVideoOrientation(orientation)
+      guard self.isConfigured else { return }
+      guard let device = self.videoInput?.device else { return }
+      let orientation = self.currentVideoOrientationForFocus()
+      let focusPoint = self.deviceFocusPoint(
+        fromLayerPoint: tapPoint,
+        previewBounds: previewBounds,
+        videoOrientation: orientation,
+        cameraPosition: device.position
+      )
+      do {
+        // Tap should clear AE/AF lock and resume auto focus + continuous exposure.
+        try self.applyFocusAndExposure(
+          to: device,
+          point: focusPoint,
+          lock: false
+        )
+      } catch {
+        #if DEBUG
+        print("⚠️ CameraViewController: tap focus failed: \(error.localizedDescription)")
+        #endif
+      }
+    }
+  }
+
+  @objc
+  private func handleFocusLock(_ recognizer: UILongPressGestureRecognizer) {
+    guard recognizer.state == .began else { return }
+    let pressPoint = recognizer.location(in: previewView)
+    let previewBounds = currentPreviewBounds()
+    sessionQueue.async {
+      guard self.isConfigured else { return }
+      guard let device = self.videoInput?.device else { return }
+      let orientation = self.currentVideoOrientationForFocus()
+      let focusPoint = self.deviceFocusPoint(
+        fromLayerPoint: pressPoint,
+        previewBounds: previewBounds,
+        videoOrientation: orientation,
+        cameraPosition: device.position
+      )
+      do {
+        try self.applyFocusAndExposure(
+          to: device,
+          point: focusPoint,
+          lock: true
+        )
+      } catch {
+        #if DEBUG
+        print("⚠️ CameraViewController: focus lock failed: \(error.localizedDescription)")
+        #endif
+      }
+    }
+  }
+
+  @objc
+  private func handlePreviewPinchGesture(_ recognizer: UIPinchGestureRecognizer) {
+    switch recognizer.state {
+    case .began:
+      pinchZoomStartFactor = videoInput?.device.videoZoomFactor ?? 1.0
+    case .changed, .ended:
+      let targetZoom = pinchZoomStartFactor * recognizer.scale
+      applyZoomFactor(targetZoom)
+    default:
+      break
     }
   }
 
   private func currentPreferredVideoOrientation() -> AVCaptureVideoOrientation {
-    if let orientation = videoOrientation(for: UIDevice.current.orientation) {
+    let interfaceOrientation: UIInterfaceOrientation
+    if Thread.isMainThread {
+      interfaceOrientation = previewView.window?.windowScene?.interfaceOrientation ?? .portrait
+    } else {
+      interfaceOrientation = DispatchQueue.main.sync {
+        previewView.window?.windowScene?.interfaceOrientation ?? .portrait
+      }
+    }
+    if let orientation = videoOrientation(for: interfaceOrientation) {
       return orientation
     }
     return .portrait
   }
 
-  private func videoOrientation(for deviceOrientation: UIDeviceOrientation) -> AVCaptureVideoOrientation? {
-    switch deviceOrientation {
+  private func videoOrientation(for orientation: UIDeviceOrientation) -> AVCaptureVideoOrientation? {
+    switch orientation {
     case .portrait:
       return .portrait
-    case .portraitUpsideDown:
-      return .portraitUpsideDown
     case .landscapeLeft:
       return .landscapeRight
     case .landscapeRight:
       return .landscapeLeft
+    case .portraitUpsideDown:
+      return .portraitUpsideDown
     default:
       return nil
+    }
+  }
+
+  private func videoOrientation(for orientation: UIInterfaceOrientation) -> AVCaptureVideoOrientation? {
+    switch orientation {
+    case .portrait:
+      return .portrait
+    case .landscapeLeft:
+      return .landscapeLeft
+    case .landscapeRight:
+      return .landscapeRight
+    case .portraitUpsideDown:
+      return .portraitUpsideDown
+    default:
+      return nil
+    }
+  }
+
+  private func updateVideoOrientation() {
+    let orientation = currentPreferredVideoOrientation()
+    let previewBounds = currentPreviewBounds()
+    if Thread.isMainThread {
+      focusPointConversionLayer.frame = previewBounds
+    } else {
+      DispatchQueue.main.async { [weak self] in
+        self?.focusPointConversionLayer.frame = previewBounds
+      }
+    }
+    sessionQueue.async {
+      self.applyVideoOrientation(orientation)
     }
   }
 
@@ -875,6 +1243,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     {
       previewConnection.videoOrientation = orientation
       if previewConnection.isVideoMirroringSupported {
+        previewConnection.automaticallyAdjustsVideoMirroring = false
         previewConnection.isVideoMirrored = (videoInput?.device.position == .front)
       }
     }
@@ -898,8 +1267,44 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     return currentPreferredVideoOrientation()
   }
 
+  private func applyZoomFactor(_ requestedZoom: CGFloat) {
+    sessionQueue.async {
+      guard self.isConfigured else { return }
+      guard let device = self.videoInput?.device else { return }
+      let maxZoom = device.activeFormat.videoMaxZoomFactor
+      let clamped = min(max(requestedZoom, 1.0), maxZoom)
+      do {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        device.videoZoomFactor = clamped
+      } catch {
+        #if DEBUG
+        print("⚠️ CameraViewController: zoom update failed: \(error.localizedDescription)")
+        #endif
+      }
+    }
+  }
+
   private func deviceFocusPoint(
     fromNormalizedPreviewPoint normalizedPoint: CGPoint,
+    previewBounds: CGRect,
+    videoOrientation: AVCaptureVideoOrientation,
+    cameraPosition: AVCaptureDevice.Position
+  ) -> CGPoint {
+    let layerPoint = CGPoint(
+      x: normalizedPoint.x * max(previewBounds.width, 1),
+      y: normalizedPoint.y * max(previewBounds.height, 1)
+    )
+    return deviceFocusPoint(
+      fromLayerPoint: layerPoint,
+      previewBounds: previewBounds,
+      videoOrientation: videoOrientation,
+      cameraPosition: cameraPosition
+    )
+  }
+
+  private func deviceFocusPoint(
+    fromLayerPoint layerPoint: CGPoint,
     previewBounds: CGRect,
     videoOrientation: AVCaptureVideoOrientation,
     cameraPosition: AVCaptureDevice.Position
@@ -916,15 +1321,16 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         connection.videoOrientation = videoOrientation
       }
       if connection.isVideoMirroringSupported {
+        connection.automaticallyAdjustsVideoMirroring = false
         connection.isVideoMirrored = (cameraPosition == .front)
       }
     }
-    let layerPoint = CGPoint(
-      x: normalizedPoint.x * safeBounds.width,
-      y: normalizedPoint.y * safeBounds.height
+    let clampedLayerPoint = CGPoint(
+      x: min(max(layerPoint.x, 0), safeBounds.width),
+      y: min(max(layerPoint.y, 0), safeBounds.height)
     )
     let devicePoint = focusPointConversionLayer.captureDevicePointConverted(
-      fromLayerPoint: layerPoint
+      fromLayerPoint: clampedLayerPoint
     )
     return CGPoint(
       x: min(max(devicePoint.x, 0.0), 1.0),
@@ -937,6 +1343,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     point: CGPoint,
     lock: Bool
   ) throws {
+    let wasLocked = stateQueue.sync { _isAeAfLocked }
     try device.lockForConfiguration()
     defer { device.unlockForConfiguration() }
 
@@ -947,15 +1354,6 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       device.exposurePointOfInterest = point
     }
 
-    if device.isFocusModeSupported(.autoFocus) {
-      device.focusMode = .autoFocus
-    } else if device.isFocusModeSupported(.continuousAutoFocus) {
-      device.focusMode = .continuousAutoFocus
-    }
-    if device.isExposureModeSupported(.continuousAutoExposure) {
-      device.exposureMode = .continuousAutoExposure
-    }
-
     if lock {
       if device.isFocusModeSupported(.locked) {
         device.focusMode = .locked
@@ -963,11 +1361,111 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       if device.isExposureModeSupported(.locked) {
         device.exposureMode = .locked
       }
+    } else {
+      if wasLocked {
+        if device.isFocusModeSupported(.continuousAutoFocus) {
+          device.focusMode = .continuousAutoFocus
+        } else if device.isFocusModeSupported(.autoFocus) {
+          device.focusMode = .autoFocus
+        }
+      } else if device.isFocusModeSupported(.autoFocus) {
+        device.focusMode = .autoFocus
+      } else if device.isFocusModeSupported(.continuousAutoFocus) {
+        device.focusMode = .continuousAutoFocus
+      }
+      if device.isExposureModeSupported(.continuousAutoExposure) {
+        device.exposureMode = .continuousAutoExposure
+      }
     }
 
     device.isSubjectAreaChangeMonitoringEnabled = !lock
     stateQueue.sync {
       _isAeAfLocked = lock
+    }
+  }
+
+  private func applyDefaultAutoFocusAndExposure(to device: AVCaptureDevice) {
+    do {
+      try device.lockForConfiguration()
+      defer { device.unlockForConfiguration() }
+      if device.isFocusModeSupported(.continuousAutoFocus) {
+        device.focusMode = .continuousAutoFocus
+      }
+      if device.isExposureModeSupported(.continuousAutoExposure) {
+        device.exposureMode = .continuousAutoExposure
+      }
+      if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+        device.whiteBalanceMode = .continuousAutoWhiteBalance
+      }
+      device.isSubjectAreaChangeMonitoringEnabled = true
+      stateQueue.sync {
+        _isAeAfLocked = false
+      }
+    } catch {
+      #if DEBUG
+      print("⚠️ CameraViewController: default AF/AE setup failed: \(error.localizedDescription)")
+      #endif
+    }
+  }
+
+  private func lockExposureForCaptureIfNeeded() {
+    let shouldLockExposure = stateQueue.sync { !_isAeAfLocked }
+    guard shouldLockExposure else {
+      stateQueue.sync {
+        _didTemporarilyLockExposureForCapture = false
+      }
+      return
+    }
+    guard let device = videoInput?.device else {
+      stateQueue.sync {
+        _didTemporarilyLockExposureForCapture = false
+      }
+      return
+    }
+
+    do {
+      try device.lockForConfiguration()
+      defer { device.unlockForConfiguration() }
+      guard device.isExposureModeSupported(.locked) else {
+        stateQueue.sync {
+          _didTemporarilyLockExposureForCapture = false
+        }
+        return
+      }
+      device.exposureMode = .locked
+      stateQueue.sync {
+        _didTemporarilyLockExposureForCapture = true
+      }
+    } catch {
+      stateQueue.sync {
+        _didTemporarilyLockExposureForCapture = false
+      }
+      #if DEBUG
+      print("⚠️ CameraViewController: pre-capture exposure lock failed: \(error.localizedDescription)")
+      #endif
+    }
+  }
+
+  private func restoreExposureAfterCaptureIfNeeded() {
+    let shouldRestore = stateQueue.sync { _didTemporarilyLockExposureForCapture }
+    guard shouldRestore else { return }
+    defer {
+      stateQueue.sync {
+        _didTemporarilyLockExposureForCapture = false
+      }
+    }
+    guard let device = videoInput?.device else { return }
+
+    do {
+      try device.lockForConfiguration()
+      defer { device.unlockForConfiguration() }
+      if device.isExposureModeSupported(.continuousAutoExposure) {
+        device.exposureMode = .continuousAutoExposure
+      }
+    } catch {
+      #if DEBUG
+      print("⚠️ CameraViewController: exposure restore failed: \(error.localizedDescription)")
+      #endif
     }
   }
 

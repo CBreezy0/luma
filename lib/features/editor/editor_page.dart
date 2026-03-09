@@ -586,37 +586,8 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       return;
     }
 
-    final asset = await AssetEntity.fromId(widget.assetId);
-    if (asset == null) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-      return;
-    }
-
-    final aspect = asset.height == 0 ? (4 / 5) : (asset.width / asset.height);
-
-    final data = await asset.thumbnailDataWithSize(
-      const ThumbnailSize(1400, 1400),
-      format: ThumbnailFormat.jpeg,
-      quality: 90,
-    );
-
     if (!mounted) return;
-
-    setState(() {
-      _originalBytes = data;
-      _previewBytes = data;
-      _frontPreview = data == null ? null : MemoryImage(data);
-      _imageAspect = aspect;
-      _loading = false;
-    });
-
-    _pushUndoCheckpoint();
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _schedulePreviewRebuild(_PreviewQuality.high, immediate: true);
-    });
+    setState(() => _loading = false);
   }
 
   void _debugDragLog(String Function() messageBuilder) {

@@ -26,15 +26,19 @@ void main() {
           if (call.method == 'setFocusPoint') {
             return {'x': 0.3, 'y': 0.4, 'isAeAfLocked': true};
           }
+          if (call.method == 'setCaptureFormat') {
+            return {'captureFormat': 'raw'};
+          }
           if (call.method == 'capturePhoto') {
             return {
               'filePath': '/tmp/capture.heic',
               'localIdentifier': 'photo-id',
               'width': 3024,
               'height': 4032,
-              'simulationId': 'slate',
+              'simulationId': 'original',
               'lookStrength': 0.85,
               'mimeType': 'image/heic',
+              'captureFormat': 'jpg',
               'capturedAt': 1,
             };
           }
@@ -103,8 +107,19 @@ void main() {
     expect(result.localIdentifier, 'photo-id');
     expect(result.width, 3024);
     expect(result.height, 4032);
-    expect(result.simulationId, 'slate');
+    expect(result.simulationId, 'original');
     expect(result.lookStrength, 0.85);
+    expect(result.captureFormat, CameraCaptureFormat.jpg);
     expect(result.capturedAtMs, 1);
+  });
+
+  test('setCaptureFormat sends method and maps response enum', () async {
+    const bridge = MethodChannelCameraBridge();
+    final format = await bridge.setCaptureFormat(CameraCaptureFormat.raw);
+
+    expect(calls, hasLength(1));
+    expect(calls.first.method, 'setCaptureFormat');
+    expect(calls.first.arguments, {'captureFormat': 'raw'});
+    expect(format, CameraCaptureFormat.raw);
   });
 }

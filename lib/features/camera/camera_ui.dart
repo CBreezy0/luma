@@ -22,15 +22,13 @@ class CameraPreviewSurface extends StatelessWidget {
 class CameraTopBar extends StatelessWidget {
   final VoidCallback onBack;
   final String formatLabel;
-  final Uint8List? thumbnailBytes;
-  final VoidCallback? onThumbnailTap;
+  final Widget? trailing;
 
   const CameraTopBar({
     super.key,
     required this.onBack,
     required this.formatLabel,
-    this.thumbnailBytes,
-    this.onThumbnailTap,
+    this.trailing,
   });
 
   @override
@@ -44,27 +42,86 @@ class CameraTopBar extends StatelessWidget {
         const Spacer(),
         CameraLabelPill(label: formatLabel),
         const Spacer(),
-        GestureDetector(
-          onTap: onThumbnailTap,
-          child: Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: const Color(0xFF242424),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: thumbnailBytes == null
-                ? Icon(
-                    Icons.photo_library_outlined,
-                    size: 16,
-                    color: Colors.white.withValues(alpha: 0.72),
-                  )
-                : Image.memory(thumbnailBytes!, fit: BoxFit.cover),
+        trailing ?? const SizedBox(width: 34, height: 34),
+      ],
+    );
+  }
+}
+
+class CameraLibraryButton extends StatelessWidget {
+  final VoidCallback? onTap;
+  final Uint8List? thumbnailBytes;
+  final int captureCount;
+  final bool enabled;
+
+  const CameraLibraryButton({
+    super.key,
+    required this.onTap,
+    this.thumbnailBytes,
+    this.captureCount = 0,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 120),
+        opacity: enabled ? 1.0 : 0.45,
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fill(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF242424),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.16),
+                    ),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: thumbnailBytes == null
+                      ? Icon(
+                          Icons.photo_library_outlined,
+                          size: 18,
+                          color: Colors.white.withValues(alpha: 0.74),
+                        )
+                      : Image.memory(thumbnailBytes!, fit: BoxFit.cover),
+                ),
+              ),
+              if (captureCount > 0)
+                Positioned(
+                  right: -4,
+                  top: -4,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 5,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF5F5F5),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: const Color(0xFF171717)),
+                    ),
+                    child: Text(
+                      '$captureCount',
+                      style: const TextStyle(
+                        color: Color(0xFF171717),
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
-      ],
+      ),
     );
   }
 }

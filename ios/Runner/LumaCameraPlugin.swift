@@ -154,6 +154,24 @@ final class LumaCameraPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         }
       }
 
+    case "setCaptureFormat":
+      let formatRaw = (args["captureFormat"] as? String) ?? CameraControllerCaptureFormat.jpg.rawValue
+      let format = CameraControllerCaptureFormat(rawValue: formatRaw) ?? .jpg
+      cameraController.setCaptureFormat(format) { formatResult in
+        switch formatResult {
+        case .success(let activeFormat):
+          result(["captureFormat": activeFormat.rawValue])
+        case .failure(let error):
+          result(
+            FlutterError(
+              code: "camera_capture_format_failed",
+              message: error.localizedDescription,
+              details: nil
+            )
+          )
+        }
+      }
+
     case "setExposureBias":
       let requestedBias = (args["bias"] as? NSNumber)?.doubleValue ?? 0.0
       cameraController.setExposureBias(requestedBias) { exposureResult in

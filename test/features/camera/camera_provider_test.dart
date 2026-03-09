@@ -77,6 +77,22 @@ void main() {
     expect(bridge.lookStrength, kCameraLookStrengthMax);
   });
 
+  test('capture format updates and propagates to bridge', () async {
+    final bridge = _FakeCameraBridge();
+    final controller = CameraUiController(
+      bridge: bridge,
+      simulations: kLumaFilmSimulations,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.initializeCamera();
+    await controller.startCamera();
+    await controller.setCaptureFormat(CameraCaptureFormat.raw);
+
+    expect(controller.state.captureFormat, CameraCaptureFormat.raw);
+    expect(bridge.captureFormat, CameraCaptureFormat.raw);
+  });
+
   test('focus point toggles AE/AF lock state', () async {
     final bridge = _FakeCameraBridge();
     final controller = CameraUiController(
@@ -130,7 +146,7 @@ void main() {
     final result = await controller.capturePhoto();
 
     expect(result, isNotNull);
-    expect(controller.state.lastCapture?.simulationId, 'slate');
+    expect(controller.state.lastCapture?.simulationId, kDefaultSimulationId);
     expect(controller.state.latestThumbnail, isNotNull);
   });
 
@@ -204,6 +220,7 @@ class _FakeCameraBridge implements CameraBridge {
   bool isAeAfLocked = false;
   CameraFlashMode flashMode = CameraFlashMode.auto;
   CameraLensMode lensMode = CameraLensMode.wide;
+  CameraCaptureFormat captureFormat = CameraCaptureFormat.jpg;
   int captureCalls = 0;
 
   @override
@@ -212,12 +229,13 @@ class _FakeCameraBridge implements CameraBridge {
     return CameraCaptureResult(
       localIdentifier: 'fake-id',
       filePath: '/tmp/fake.heic',
-      simulationId: lastSimulationId ?? 'slate',
+      simulationId: lastSimulationId ?? kDefaultSimulationId,
       lookStrength: lookStrength,
       mimeType: 'image/heic',
       width: 1000,
       height: 750,
       capturedAtMs: DateTime.now().millisecondsSinceEpoch,
+      captureFormat: captureFormat,
     );
   }
 
@@ -229,10 +247,12 @@ class _FakeCameraBridge implements CameraBridge {
     return const CameraInitializeResult(
       isReady: true,
       supportsUltraWide: true,
+      supportsRawCapture: true,
       activeLensMode: CameraLensMode.wide,
       isAeAfLocked: false,
       exposureBias: 0,
       lookStrength: 1.0,
+      captureFormat: CameraCaptureFormat.jpg,
     );
   }
 
@@ -286,6 +306,14 @@ class _FakeCameraBridge implements CameraBridge {
   }
 
   @override
+  Future<CameraCaptureFormat> setCaptureFormat(
+    CameraCaptureFormat format,
+  ) async {
+    captureFormat = format;
+    return captureFormat;
+  }
+
+  @override
   Future<void> setSimulation({
     required String simulationId,
     required double intensity,
@@ -324,12 +352,13 @@ class _DelayedCaptureBridge extends _FakeCameraBridge {
     return CameraCaptureResult(
       localIdentifier: 'fake-id',
       filePath: '/tmp/fake.heic',
-      simulationId: lastSimulationId ?? 'slate',
+      simulationId: lastSimulationId ?? kDefaultSimulationId,
       lookStrength: lookStrength,
       mimeType: 'image/heic',
       width: 1000,
       height: 750,
       capturedAtMs: DateTime.now().millisecondsSinceEpoch,
+      captureFormat: captureFormat,
     );
   }
 

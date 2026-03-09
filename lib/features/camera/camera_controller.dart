@@ -7,18 +7,22 @@ import 'camera_models.dart';
 class CameraInitializeResult {
   final bool isReady;
   final bool supportsUltraWide;
+  final bool supportsRawCapture;
   final CameraLensMode activeLensMode;
   final bool isAeAfLocked;
   final double exposureBias;
   final double lookStrength;
+  final CameraCaptureFormat captureFormat;
 
   const CameraInitializeResult({
     required this.isReady,
     required this.supportsUltraWide,
+    required this.supportsRawCapture,
     required this.activeLensMode,
     required this.isAeAfLocked,
     required this.exposureBias,
     required this.lookStrength,
+    required this.captureFormat,
   });
 }
 
@@ -38,6 +42,7 @@ abstract class CameraBridge {
   Future<double> setLookStrength(double strength);
   Future<void> setFlashMode(CameraFlashMode mode);
   Future<CameraLensMode> setLensMode(CameraLensMode mode);
+  Future<CameraCaptureFormat> setCaptureFormat(CameraCaptureFormat format);
   Future<double> setExposureBias(double bias);
   Future<CameraCaptureResult> capturePhoto();
   Future<Uint8List?> latestThumbnail();
@@ -61,6 +66,8 @@ class MethodChannelCameraBridge implements CameraBridge {
     final isReady = (response?['isReady'] as bool?) ?? true;
     final supportsUltraWide =
         (response?['supportsUltraWide'] as bool?) ?? false;
+    final supportsRawCapture =
+        (response?['supportsRawCapture'] as bool?) ?? false;
     final activeLens = cameraLensModeFromWire(
       response?['activeLensMode'] as String?,
     );
@@ -69,15 +76,20 @@ class MethodChannelCameraBridge implements CameraBridge {
     final lookStrength =
         (response?['lookStrength'] as num?)?.toDouble() ??
         kCameraLookStrengthMax;
+    final captureFormat = cameraCaptureFormatFromWire(
+      response?['captureFormat'] as String?,
+    );
     return CameraInitializeResult(
       isReady: isReady,
       supportsUltraWide: supportsUltraWide,
+      supportsRawCapture: supportsRawCapture,
       activeLensMode: activeLens,
       isAeAfLocked: isAeAfLocked,
       exposureBias: exposureBias,
       lookStrength: lookStrength
           .clamp(kCameraLookStrengthMin, kCameraLookStrengthMax)
           .toDouble(),
+      captureFormat: captureFormat,
     );
   }
 
@@ -138,6 +150,17 @@ class MethodChannelCameraBridge implements CameraBridge {
       {'lensMode': mode.wireValue},
     );
     return cameraLensModeFromWire(response?['activeLensMode'] as String?);
+  }
+
+  @override
+  Future<CameraCaptureFormat> setCaptureFormat(
+    CameraCaptureFormat format,
+  ) async {
+    final response = await _channel.invokeMapMethod<String, dynamic>(
+      'setCaptureFormat',
+      {'captureFormat': format.wireValue},
+    );
+    return cameraCaptureFormatFromWire(response?['captureFormat'] as String?);
   }
 
   @override

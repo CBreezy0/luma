@@ -2,13 +2,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:luma/features/camera/look_registry.dart';
 
 void main() {
-  test('look registry has six unique branded looks', () {
-    expect(kLumaFilmSimulations.length, 6);
+  test('look registry includes original plus six unique branded looks', () {
+    expect(kLumaFilmSimulations.length, 7);
 
     final ids = kLumaFilmSimulations.map((s) => s.id).toSet();
     final names = kLumaFilmSimulations.map((s) => s.name).toSet();
-    expect(ids.length, 6);
-    expect(names.length, 6);
+    expect(ids.length, 7);
+    expect(names.length, 7);
+    expect(kLumaFilmSimulations.first.id, kDefaultSimulationId);
+    expect(kLumaFilmSimulations.first.name, 'Original');
   });
 
   test('look names do not use disallowed trademarked names', () {

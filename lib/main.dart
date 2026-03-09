@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'features/gallery/gallery_page.dart';
+import 'features/camera/camera_page.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -62,7 +62,7 @@ class _SplashPageState extends State<SplashPage> {
           transitionDuration: Duration.zero,
           reverseTransitionDuration: Duration.zero,
           pageBuilder: (context, animation, secondaryAnimation) =>
-              const GalleryPage(),
+              const CameraPage(),
         ),
       );
     });
