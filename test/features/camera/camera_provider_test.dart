@@ -93,6 +93,75 @@ void main() {
     expect(bridge.captureFormat, CameraCaptureFormat.raw);
   });
 
+  test('initializeCamera preserves native capture format variants', () async {
+    final bridge = _FakeCameraBridge()
+      ..availableCaptureFormats = <CameraCaptureFormat>[
+        CameraCaptureFormat.heic,
+        CameraCaptureFormat.jpg,
+        CameraCaptureFormat.raw,
+        CameraCaptureFormat.rawPlusHeic,
+        CameraCaptureFormat.rawPlusJpg,
+      ];
+    final controller = CameraUiController(
+      bridge: bridge,
+      simulations: kLumaFilmSimulations,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.initializeCamera();
+
+    expect(controller.state.availableCaptureFormats, <CameraCaptureFormat>[
+      CameraCaptureFormat.heic,
+      CameraCaptureFormat.jpg,
+      CameraCaptureFormat.raw,
+      CameraCaptureFormat.rawPlusHeic,
+      CameraCaptureFormat.rawPlusJpg,
+    ]);
+  });
+
+  test('zoom factor updates and clamps in provider state', () async {
+    final bridge = _FakeCameraBridge();
+    final controller = CameraUiController(
+      bridge: bridge,
+      simulations: kLumaFilmSimulations,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.initializeCamera();
+    await controller.startCamera();
+    await controller.setZoomFactor(3.0);
+    expect(controller.state.zoomFactor, closeTo(3.0, 0.0001));
+    expect(bridge.zoomFactor, closeTo(3.0, 0.0001));
+
+    await controller.setZoomFactor(8.0);
+    expect(controller.state.zoomFactor, closeTo(bridge.maxZoomFactor, 0.0001));
+  });
+
+  test('photo resolution updates and propagates to bridge', () async {
+    final bridge = _FakeCameraBridge();
+    final controller = CameraUiController(
+      bridge: bridge,
+      simulations: kLumaFilmSimulations,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.initializeCamera();
+    await controller.startCamera();
+    await controller.setPhotoResolution(
+      const CameraPhotoResolution(width: 5712, height: 4284),
+    );
+
+    expect(
+      controller.state.selectedPhotoResolution,
+      const CameraPhotoResolution(width: 5712, height: 4284),
+    );
+    expect(
+      bridge.selectedPhotoResolution,
+      const CameraPhotoResolution(width: 5712, height: 4284),
+    );
+    expect(controller.state.megapixels, closeTo(24.470208, 0.0001));
+  });
+
   test('focus point toggles AE/AF lock state', () async {
     final bridge = _FakeCameraBridge();
     final controller = CameraUiController(
@@ -132,6 +201,26 @@ void main() {
     expect(controller.state.exposureBias, kCameraExposureBiasMax);
     expect(bridge.exposureBias, kCameraExposureBiasMax);
   });
+
+  test(
+    'manual focus distance updates and activates manual focus mode',
+    () async {
+      final bridge = _FakeCameraBridge();
+      final controller = CameraUiController(
+        bridge: bridge,
+        simulations: kLumaFilmSimulations,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.initializeCamera();
+      await controller.startCamera();
+      await controller.setManualFocusDistance(0.75);
+
+      expect(controller.state.supportsManualFocus, isTrue);
+      expect(controller.state.focusDistance, closeTo(0.75, 0.0001));
+      expect(controller.state.isManualFocusActive, isTrue);
+    },
+  );
 
   test('capture updates lastCapture and latest thumbnail', () async {
     final bridge = _FakeCameraBridge();
@@ -220,7 +309,24 @@ class _FakeCameraBridge implements CameraBridge {
   bool isAeAfLocked = false;
   CameraFlashMode flashMode = CameraFlashMode.auto;
   CameraLensMode lensMode = CameraLensMode.wide;
-  CameraCaptureFormat captureFormat = CameraCaptureFormat.jpg;
+  CameraCaptureFormat captureFormat = CameraCaptureFormat.heic;
+  List<CameraCaptureFormat> availableCaptureFormats = <CameraCaptureFormat>[
+    CameraCaptureFormat.heic,
+    CameraCaptureFormat.jpg,
+    CameraCaptureFormat.raw,
+  ];
+  double zoomFactor = 1.0;
+  double minZoomFactor = 0.5;
+  double maxZoomFactor = 5.0;
+  CameraPhotoResolution selectedPhotoResolution = const CameraPhotoResolution(
+    width: 4032,
+    height: 3024,
+  );
+  List<CameraPhotoResolution> availablePhotoResolutions =
+      const <CameraPhotoResolution>[
+        CameraPhotoResolution(width: 4032, height: 3024),
+        CameraPhotoResolution(width: 5712, height: 4284),
+      ];
   int captureCalls = 0;
 
   @override
@@ -244,15 +350,29 @@ class _FakeCameraBridge implements CameraBridge {
 
   @override
   Future<CameraInitializeResult> initializeCamera() async {
-    return const CameraInitializeResult(
+    return CameraInitializeResult(
       isReady: true,
       supportsUltraWide: true,
       supportsRawCapture: true,
+      supportsAppleProRAWCapture: false,
       activeLensMode: CameraLensMode.wide,
       isAeAfLocked: false,
       exposureBias: 0,
       lookStrength: 1.0,
-      captureFormat: CameraCaptureFormat.jpg,
+      captureFormat: captureFormat,
+      availableCaptureFormats: availableCaptureFormats,
+      zoomFactor: 1.0,
+      minZoomFactor: 0.5,
+      maxZoomFactor: 5.0,
+      megapixels: 12.192768,
+      availablePhotoResolutions: <CameraPhotoResolution>[
+        CameraPhotoResolution(width: 4032, height: 3024),
+        CameraPhotoResolution(width: 5712, height: 4284),
+      ],
+      selectedPhotoResolution: CameraPhotoResolution(width: 4032, height: 3024),
+      supportsManualFocus: true,
+      focusDistance: 0.0,
+      isManualFocusActive: false,
     );
   }
 
@@ -264,6 +384,11 @@ class _FakeCameraBridge implements CameraBridge {
   @override
   Stream<List<double>> histogramStream() {
     return const Stream<List<double>>.empty();
+  }
+
+  @override
+  Stream<CameraZoomUpdate> zoomStream() {
+    return const Stream<CameraZoomUpdate>.empty();
   }
 
   @override
@@ -311,6 +436,49 @@ class _FakeCameraBridge implements CameraBridge {
   ) async {
     captureFormat = format;
     return captureFormat;
+  }
+
+  @override
+  Future<CameraZoomUpdate> setPhotoResolution(
+    CameraPhotoResolution resolution,
+  ) async {
+    selectedPhotoResolution = resolution;
+    return CameraZoomUpdate(
+      zoomFactor: zoomFactor,
+      minZoomFactor: minZoomFactor,
+      maxZoomFactor: maxZoomFactor,
+      megapixels: resolution.megapixels,
+      availablePhotoResolutions: availablePhotoResolutions,
+      selectedPhotoResolution: selectedPhotoResolution,
+    );
+  }
+
+  @override
+  Future<CameraZoomUpdate> setZoomFactor(double factor) async {
+    final clamped = factor.clamp(minZoomFactor, maxZoomFactor).toDouble();
+    zoomFactor = clamped;
+    return CameraZoomUpdate(
+      zoomFactor: zoomFactor,
+      minZoomFactor: minZoomFactor,
+      maxZoomFactor: maxZoomFactor,
+      megapixels: selectedPhotoResolution.megapixels,
+      availablePhotoResolutions: availablePhotoResolutions,
+      selectedPhotoResolution: selectedPhotoResolution,
+    );
+  }
+
+  @override
+  Future<CameraManualFocusUpdate> setManualFocusDistance(
+    double distance,
+  ) async {
+    final clamped = distance
+        .clamp(kCameraFocusDistanceMin, kCameraFocusDistanceMax)
+        .toDouble();
+    return CameraManualFocusUpdate(
+      supportsManualFocus: true,
+      focusDistance: clamped,
+      isManualFocusActive: true,
+    );
   }
 
   @override

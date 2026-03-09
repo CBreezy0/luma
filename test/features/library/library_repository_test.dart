@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:luma/features/camera/camera_models.dart';
 import 'package:luma/features/library/library_models.dart';
 import 'package:luma/features/library/library_repository.dart';
 
@@ -116,6 +117,42 @@ void main() {
     await repository.deletePhoto('to-delete');
     final all = await repository.getAllPhotos();
     expect(all, isEmpty);
+  }, skip: !isarCorePresent);
+
+  test('addCapturedPhoto preserves capture metadata fields', () async {
+    final source = File('${tempDir.path}/capture.heic');
+    await source.writeAsBytes(const <int>[1, 2, 3, 4, 5]);
+
+    final saved = await repository.addCapturedPhoto(
+      CameraCaptureResult(
+        localIdentifier: 'asset-id',
+        filePath: source.path,
+        simulationId: 'original',
+        lookStrength: 1.0,
+        mimeType: 'image/heic',
+        iso: 160,
+        shutterSpeed: '1/60',
+        aperture: 1.78,
+        focalLength: 6.86,
+        lens: 'Wide',
+        width: 4032,
+        height: 3024,
+        location: '40.71280, -74.00600',
+        capturedAtMs: 123456789,
+        captureFormat: CameraCaptureFormat.heic,
+      ),
+    );
+
+    final loaded = await repository.photoById(saved.photoId);
+    expect(loaded, isNotNull);
+    expect(loaded!.iso, 160);
+    expect(loaded.shutterSpeed, '1/60');
+    expect(loaded.aperture, 1.78);
+    expect(loaded.focalLength, 6.86);
+    expect(loaded.lens, 'Wide');
+    expect(loaded.location, '40.71280, -74.00600');
+    expect(loaded.width, 4032);
+    expect(loaded.height, 3024);
   }, skip: !isarCorePresent);
 
   test(
