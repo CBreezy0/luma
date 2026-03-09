@@ -15,6 +15,8 @@
 		A11100022F20000100AB1001 /* LumaCameraPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100122F20000100AB1001 /* LumaCameraPlugin.swift */; };
 		A11100032F20000100AB1001 /* LumaFilmSimulation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100132F20000100AB1001 /* LumaFilmSimulation.swift */; };
 		A11100042F20000100AB1001 /* LumaLUTLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100142F20000100AB1001 /* LumaLUTLoader.swift */; };
+		A11100052F20000100AB1001 /* LumaPreviewProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100152F20000100AB1001 /* LumaPreviewProcessor.swift */; };
+		A11100072F20000100AB1001 /* LumaFrameAligner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100172F20000100AB1001 /* LumaFrameAligner.swift */; };
 		90F6C7982F085FCD000AB089 /* NativeRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90F6C7972F085FCD000AB089 /* NativeRenderer.swift */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
@@ -59,6 +61,8 @@
 		A11100122F20000100AB1001 /* LumaCameraPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaCameraPlugin.swift; sourceTree = "<group>"; };
 		A11100132F20000100AB1001 /* LumaFilmSimulation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaFilmSimulation.swift; sourceTree = "<group>"; };
 		A11100142F20000100AB1001 /* LumaLUTLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaLUTLoader.swift; sourceTree = "<group>"; };
+		A11100152F20000100AB1001 /* LumaPreviewProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaPreviewProcessor.swift; sourceTree = "<group>"; };
+		A11100172F20000100AB1001 /* LumaFrameAligner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaFrameAligner.swift; sourceTree = "<group>"; };
 		763782C3D1E9678FF32411F4 /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = Flutter/Release.xcconfig; sourceTree = "<group>"; };
 		90F6C7972F085FCD000AB089 /* NativeRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeRenderer.swift; sourceTree = "<group>"; };
@@ -157,6 +161,8 @@
 				A11100122F20000100AB1001 /* LumaCameraPlugin.swift */,
 				A11100132F20000100AB1001 /* LumaFilmSimulation.swift */,
 				A11100142F20000100AB1001 /* LumaLUTLoader.swift */,
+				A11100152F20000100AB1001 /* LumaPreviewProcessor.swift */,
+				A11100172F20000100AB1001 /* LumaFrameAligner.swift */,
 				90F6C7972F085FCD000AB089 /* NativeRenderer.swift */,
 				97C146FA1CF9000F007C117D /* Main.storyboard */,
 				97C146FD1CF9000F007C117D /* Assets.xcassets */,
@@ -212,6 +218,7 @@
 				97C146EC1CF9000F007C117D /* Resources */,
 				9705A1C41CF9048500538489 /* Embed Frameworks */,
 				3B06AD1E1E4923F5004D2608 /* Thin Binary */,
+				A11100062F20000100AB1001 /* Code Sign Embedded Frameworks */,
 				63ABA191BF369B652E735738 /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
@@ -320,7 +327,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" embed_and_thin";
+			shellScript = "PROJECT_ROOT=\"${FLUTTER_APPLICATION_PATH:-${SOURCE_ROOT}/..}\"\nNATIVE_ASSETS_DIR=\"${PROJECT_ROOT}/build/native_assets/ios\"\nPRIMARY_FRAMEWORKS_DIR=\"${PROJECT_ROOT}/build/ios/${CONFIGURATION}${EFFECTIVE_PLATFORM_NAME}/Runner.app/Frameworks\"\nFALLBACK_FRAMEWORKS_DIR=\"${PROJECT_ROOT}/build/ios/${PLATFORM_NAME}/Runner.app/Frameworks\"\n\nif [ ! -d \"${NATIVE_ASSETS_DIR}\" ]; then\n  for candidate in \"${PRIMARY_FRAMEWORKS_DIR}\" \"${FALLBACK_FRAMEWORKS_DIR}\"; do\n    if [ ! -d \"${candidate}\" ]; then\n      continue\n    fi\n\n    /bin/mkdir -p \"${NATIVE_ASSETS_DIR}\"\n    restored_any=0\n    for framework in \"${candidate}\"/*.framework; do\n      if [ ! -d \"${framework}\" ]; then\n        continue\n      fi\n\n      framework_name=\"$(basename \"${framework}\")\"\n      case \"${framework_name}\" in\n        App.framework|Flutter.framework)\n          continue\n          ;;\n      esac\n\n      echo \"Restoring ${framework_name} into native assets cache\"\n      /usr/bin/rsync -a --delete -- \"${framework}\" \"${NATIVE_ASSETS_DIR}/\"\n      restored_any=1\n    done\n\n    if [ \"${restored_any}\" = \"1\" ]; then\n      break\n    fi\n  done\nfi\n\n/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" embed_and_thin";
 		};
 		631A8E7F6CB3F7A327043270 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -361,6 +368,23 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Runner/Pods-Runner-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
+		A11100062F20000100AB1001 /* Code Sign Embedded Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}",
+			);
+			name = "Code Sign Embedded Frameworks";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"${PLATFORM_NAME}\" != \"iphoneos\" ]; then\n  exit 0\nfi\n\nif [ \"${CODE_SIGNING_ALLOWED}\" = \"NO\" ] || [ \"${CODE_SIGNING_REQUIRED}\" = \"NO\" ] || [ -z \"${EXPANDED_CODE_SIGN_IDENTITY}\" ]; then\n  exit 0\nfi\n\nFRAMEWORKS_DIR=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\nif [ ! -d \"${FRAMEWORKS_DIR}\" ]; then\n  exit 0\nfi\n\nfind \"${FRAMEWORKS_DIR}\" -maxdepth 1 -type d -name \"*.framework\" | while IFS= read -r framework; do\n  echo \"Code signing ${framework}\"\n  /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --preserve-metadata=identifier,entitlements,flags -- \"${framework}\"\ndone\n";
+			showEnvVarsInLog = 0;
+		};
 		9740EEB61CF901F6004384FC /* Run Script */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -393,6 +417,8 @@
 			files = (
 				A11100022F20000100AB1001 /* LumaCameraPlugin.swift in Sources */,
 				A11100042F20000100AB1001 /* LumaLUTLoader.swift in Sources */,
+				A11100052F20000100AB1001 /* LumaPreviewProcessor.swift in Sources */,
+				A11100072F20000100AB1001 /* LumaFrameAligner.swift in Sources */,
 				A11100012F20000100AB1001 /* CameraViewController.swift in Sources */,
 				A11100032F20000100AB1001 /* LumaFilmSimulation.swift in Sources */,
 				90F6C7982F085FCD000AB089 /* NativeRenderer.swift in Sources */,

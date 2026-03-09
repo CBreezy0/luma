@@ -5,14 +5,18 @@ import Flutter
 #endif
 
 #if canImport(Flutter)
-final class LumaCameraPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
+final class LumaCameraPlugin: NSObject, FlutterPlugin {
   private let cameraController = CameraViewController()
   private var histogramSink: FlutterEventSink?
+  private var zoomSink: FlutterEventSink?
 
   override init() {
     super.init()
     cameraController.onHistogramUpdated = { [weak self] values in
       self?.histogramSink?(values)
+    }
+    cameraController.onZoomUpdated = { [weak self] payload in
+      self?.zoomSink?(payload)
     }
   }
 
@@ -27,7 +31,30 @@ final class LumaCameraPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
       name: "luma/camera_histogram",
       binaryMessenger: registrar.messenger()
     )
-    histogramChannel.setStreamHandler(instance)
+    histogramChannel.setStreamHandler(
+      LumaEventStreamHandler(
+        onListen: { events in
+          instance.histogramSink = events
+        },
+        onCancel: {
+          instance.histogramSink = nil
+        }
+      )
+    )
+    let zoomChannel = FlutterEventChannel(
+      name: "luma/camera_zoom",
+      binaryMessenger: registrar.messenger()
+    )
+    zoomChannel.setStreamHandler(
+      LumaEventStreamHandler(
+        onListen: { events in
+          instance.zoomSink = events
+        },
+        onCancel: {
+          instance.zoomSink = nil
+        }
+      )
+    )
     let factory = LumaCameraPreviewFactory(controller: instance.cameraController)
     registrar.register(factory, withId: "luma/camera_preview")
   }
@@ -155,8 +182,8 @@ final class LumaCameraPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
       }
 
     case "setCaptureFormat":
-      let formatRaw = (args["captureFormat"] as? String) ?? CameraControllerCaptureFormat.jpg.rawValue
-      let format = CameraControllerCaptureFormat(rawValue: formatRaw) ?? .jpg
+      let formatRaw = (args["captureFormat"] as? String) ?? CameraControllerCaptureFormat.heic.rawValue
+      let format = CameraControllerCaptureFormat(rawValue: formatRaw) ?? .heic
       cameraController.setCaptureFormat(format) { formatResult in
         switch formatResult {
         case .success(let activeFormat):
@@ -165,6 +192,58 @@ final class LumaCameraPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
           result(
             FlutterError(
               code: "camera_capture_format_failed",
+              message: error.localizedDescription,
+              details: nil
+            )
+          )
+        }
+      }
+
+    case "setPhotoResolution":
+      let width = (args["width"] as? NSNumber)?.intValue ?? 0
+      let height = (args["height"] as? NSNumber)?.intValue ?? 0
+      cameraController.setPhotoResolution(width: width, height: height) { resolutionResult in
+        switch resolutionResult {
+        case .success(let payload):
+          result(payload)
+        case .failure(let error):
+          result(
+            FlutterError(
+              code: "camera_photo_resolution_failed",
+              message: error.localizedDescription,
+              details: nil
+            )
+          )
+        }
+      }
+
+    case "setZoomFactor":
+      let requestedZoom = (args["zoomFactor"] as? NSNumber)?.doubleValue ?? 1.0
+      cameraController.setZoomFactor(requestedZoom) { zoomResult in
+        switch zoomResult {
+        case .success(let payload):
+          result(payload)
+        case .failure(let error):
+          result(
+            FlutterError(
+              code: "camera_zoom_failed",
+              message: error.localizedDescription,
+              details: nil
+            )
+          )
+        }
+      }
+
+    case "setManualFocusDistance":
+      let requestedDistance = (args["focusDistance"] as? NSNumber)?.doubleValue ?? 0.0
+      cameraController.setManualFocusDistance(requestedDistance) { focusResult in
+        switch focusResult {
+        case .success(let payload):
+          result(payload)
+        case .failure(let error):
+          result(
+            FlutterError(
+              code: "camera_manual_focus_failed",
               message: error.localizedDescription,
               details: nil
             )
@@ -220,14 +299,28 @@ final class LumaCameraPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
       result(FlutterMethodNotImplemented)
     }
   }
+}
+
+private final class LumaEventStreamHandler: NSObject, FlutterStreamHandler {
+  private let onListen: (@escaping FlutterEventSink) -> Void
+  private let onCancel: () -> Void
+
+  init(
+    onListen: @escaping (@escaping FlutterEventSink) -> Void,
+    onCancel: @escaping () -> Void
+  ) {
+    self.onListen = onListen
+    self.onCancel = onCancel
+    super.init()
+  }
 
   func onListen(withArguments _: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-    histogramSink = events
+    onListen(events)
     return nil
   }
 
   func onCancel(withArguments _: Any?) -> FlutterError? {
-    histogramSink = nil
+    onCancel()
     return nil
   }
 }
