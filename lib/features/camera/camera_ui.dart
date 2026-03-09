@@ -22,12 +22,14 @@ class CameraPreviewSurface extends StatelessWidget {
 class CameraTopBar extends StatelessWidget {
   final VoidCallback onBack;
   final String formatLabel;
+  final VoidCallback? onFormatTap;
   final Widget? trailing;
 
   const CameraTopBar({
     super.key,
     required this.onBack,
     required this.formatLabel,
+    this.onFormatTap,
     this.trailing,
   });
 
@@ -40,7 +42,14 @@ class CameraTopBar extends StatelessWidget {
           onTap: onBack,
         ),
         const Spacer(),
-        CameraLabelPill(label: formatLabel),
+        GestureDetector(
+          onTap: onFormatTap,
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 140),
+            opacity: onFormatTap == null ? 0.55 : 1.0,
+            child: CameraLabelPill(label: formatLabel),
+          ),
+        ),
         const Spacer(),
         trailing ?? const SizedBox(width: 34, height: 34),
       ],
@@ -153,13 +162,58 @@ class CameraLabelPill extends StatelessWidget {
   }
 }
 
+class CameraResolutionPill extends StatelessWidget {
+  final String label;
+  final VoidCallback? onTap;
+  final bool enabled;
+
+  const CameraResolutionPill({
+    super.key,
+    required this.label,
+    this.onTap,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: GestureDetector(
+        onTap: enabled ? onTap : null,
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 140),
+          opacity: enabled ? 1.0 : 0.55,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.36),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+            ),
+            child: Text(
+              label.toUpperCase(),
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.92),
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.6,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class CameraShutterButton extends StatelessWidget {
   final bool enabled;
+  final bool isAnimating;
   final VoidCallback onPressed;
 
   const CameraShutterButton({
     super.key,
     required this.enabled,
+    this.isAnimating = false,
     required this.onPressed,
   });
 
@@ -170,28 +224,141 @@ class CameraShutterButton extends StatelessWidget {
       child: AnimatedOpacity(
         duration: const Duration(milliseconds: 120),
         opacity: enabled ? 1.0 : 0.45,
-        child: Container(
-          width: 86,
-          height: 86,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.9),
-              width: 3,
-            ),
-          ),
-          alignment: Alignment.center,
+        child: AnimatedScale(
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOutCubic,
+          scale: isAnimating ? 0.9 : 1.0,
           child: Container(
-            width: 70,
-            height: 70,
-            decoration: const BoxDecoration(
+            width: 86,
+            height: 86,
+            decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: Colors.white,
+              border: Border.all(
+                color: Colors.white.withValues(alpha: isAnimating ? 1.0 : 0.9),
+                width: isAnimating ? 3.6 : 3.0,
+              ),
+              boxShadow: isAnimating
+                  ? [
+                      BoxShadow(
+                        color: Colors.white.withValues(alpha: 0.22),
+                        blurRadius: 18,
+                        spreadRadius: 2,
+                      ),
+                    ]
+                  : const [],
+            ),
+            alignment: Alignment.center,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              curve: Curves.easeOutCubic,
+              width: isAnimating ? 60 : 70,
+              height: isAnimating ? 60 : 70,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isAnimating ? const Color(0xFFF2F2F2) : Colors.white,
+              ),
             ),
           ),
         ),
       ),
     );
+  }
+}
+
+class CameraQuickZoomSelector extends StatelessWidget {
+  final List<double> levels;
+  final double currentZoom;
+  final bool enabled;
+  final ValueChanged<double> onSelected;
+
+  const CameraQuickZoomSelector({
+    super.key,
+    required this.levels,
+    required this.currentZoom,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (levels.isEmpty) return const SizedBox.shrink();
+
+    var selectedLevel = levels.first;
+    var minDistance = (currentZoom - selectedLevel).abs();
+    for (final level in levels.skip(1)) {
+      final distance = (currentZoom - level).abs();
+      if (distance < minDistance) {
+        minDistance = distance;
+        selectedLevel = level;
+      }
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '${currentZoom.toStringAsFixed(currentZoom >= 10 ? 0 : 1)}x',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.92),
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.3,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: levels
+              .map((level) {
+                final selected = (level - selectedLevel).abs() < 0.0001;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 5),
+                  child: GestureDetector(
+                    onTap: enabled ? () => onSelected(level) : null,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 140),
+                      curve: Curves.easeOutCubic,
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: selected
+                            ? Colors.white.withValues(alpha: 0.88)
+                            : Colors.black.withValues(alpha: 0.35),
+                        border: Border.all(
+                          color: selected
+                              ? Colors.white
+                              : Colors.white.withValues(alpha: 0.24),
+                          width: selected ? 1.2 : 1.0,
+                        ),
+                      ),
+                      child: Center(
+                        child: Text(
+                          _formatZoomLabel(level),
+                          style: TextStyle(
+                            color: selected ? Colors.black : Colors.white,
+                            fontSize: 12,
+                            fontWeight: selected
+                                ? FontWeight.w800
+                                : FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              })
+              .toList(growable: false),
+        ),
+      ],
+    );
+  }
+
+  String _formatZoomLabel(double value) {
+    if ((value - value.roundToDouble()).abs() < 0.0001) {
+      return '${value.toStringAsFixed(0)}x';
+    }
+    return '${value.toStringAsFixed(1)}x';
   }
 }
 

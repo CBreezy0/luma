@@ -1,5 +1,7 @@
 import 'camera_models.dart';
 
+// Native camera processing owns the tonal and color tuning for these looks.
+// Flutter keeps only the stable ids, labels, and default intensity/strength behavior.
 const String kDefaultSimulationId = 'original';
 
 const List<LumaFilmSimulation> kLumaFilmSimulations = [

@@ -31,10 +31,16 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   final CameraBridge _bridge;
   final List<LumaFilmSimulation> _simulations;
   StreamSubscription<List<double>>? _histogramSubscription;
+  StreamSubscription<CameraZoomUpdate>? _zoomSubscription;
   double? _pendingLookStrength;
   bool _isApplyingLookStrength = false;
   double? _pendingExposureBias;
   bool _isApplyingExposureBias = false;
+  double _appliedExposureBias = 0.0;
+  double? _pendingZoomFactor;
+  bool _isApplyingZoomFactor = false;
+  double? _pendingFocusDistance;
+  bool _isApplyingFocusDistance = false;
   bool _initialized = false;
   bool _isDisposed = false;
   bool _cameraShutdownRequested = false;
@@ -59,13 +65,27 @@ class CameraUiController extends StateNotifier<CameraUiState> {
         isReady: init.isReady,
         supportsUltraWide: init.supportsUltraWide,
         supportsRawCapture: init.supportsRawCapture,
+        supportsAppleProRAWCapture: init.supportsAppleProRAWCapture,
         lensMode: init.activeLensMode,
         isAeAfLocked: init.isAeAfLocked,
         lookStrength: init.lookStrength,
         exposureBias: init.exposureBias,
         captureFormat: init.captureFormat,
+        availableCaptureFormats: init.availableCaptureFormats,
+        zoomFactor: init.zoomFactor,
+        minZoomFactor: init.minZoomFactor,
+        maxZoomFactor: init.maxZoomFactor,
+        megapixels: init.megapixels,
+        availablePhotoResolutions: init.availablePhotoResolutions,
+        selectedPhotoResolution: init.selectedPhotoResolution,
+        supportsManualFocus: init.supportsManualFocus,
+        focusDistance: init.focusDistance,
+        isManualFocusActive: init.isManualFocusActive,
         errorMessage: null,
       );
+      _appliedExposureBias = init.exposureBias
+          .clamp(kCameraExposureBiasMin, kCameraExposureBiasMax)
+          .toDouble();
       await _bridge.setSimulation(
         simulationId: state.selectedSimulationId,
         intensity: _activeIntensity,
@@ -87,12 +107,21 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     try {
       await _bridge.startCamera();
       if (_isDisposed || !mounted) return;
+      final zoom = await _bridge.setZoomFactor(1.0);
+      if (_isDisposed || !mounted) return;
       _isCameraRunning = true;
       _bindHistogramStream();
+      _bindZoomStream();
       state = state.copyWith(
         isInitializing: false,
         isReady: true,
         isAeAfLocked: false,
+        zoomFactor: zoom.zoomFactor,
+        minZoomFactor: zoom.minZoomFactor,
+        maxZoomFactor: zoom.maxZoomFactor,
+        megapixels: zoom.megapixels,
+        availablePhotoResolutions: zoom.availablePhotoResolutions,
+        selectedPhotoResolution: zoom.selectedPhotoResolution,
         errorMessage: null,
       );
     } catch (error) {
@@ -110,6 +139,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     if (_isDisposed) return;
     _isCameraRunning = false;
     await _cancelHistogramSubscription();
+    await _cancelZoomSubscription();
     try {
       await _bridge.stopCamera();
     } catch (_) {
@@ -150,16 +180,36 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     final normalizedX = x.clamp(0.0, 1.0).toDouble();
     final normalizedY = y.clamp(0.0, 1.0).toDouble();
     final previousLock = state.isAeAfLocked;
-    state = state.copyWith(isAeAfLocked: lock, errorMessage: null);
+    final previousFocusDistance = state.focusDistance;
+    final previousManualFocusActive = state.isManualFocusActive;
+    state = state.copyWith(
+      isAeAfLocked: lock,
+      isManualFocusActive: lock ? state.isManualFocusActive : false,
+      errorMessage: null,
+    );
     try {
       await _bridge.setFocusPoint(x: normalizedX, y: normalizedY, lock: lock);
     } catch (error) {
       if (_isDisposed || !mounted) return;
       state = state.copyWith(
         isAeAfLocked: previousLock,
+        focusDistance: previousFocusDistance,
+        isManualFocusActive: previousManualFocusActive,
         errorMessage: 'Could not set focus: $error',
       );
     }
+  }
+
+  Future<void> focusWithAutoExposure({
+    required double x,
+    required double y,
+  }) async {
+    await setFocusPoint(x: x, y: y, lock: false);
+    await setExposureBias(0.0);
+  }
+
+  Future<void> toggleAeAfLock({required double x, required double y}) async {
+    await setFocusPoint(x: x, y: y, lock: !state.isAeAfLocked);
   }
 
   Future<void> cycleFlashMode() async {
@@ -220,6 +270,120 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     }
   }
 
+  Future<void> setPhotoResolution(CameraPhotoResolution resolution) async {
+    if (_isDisposed ||
+        state.isInitializing ||
+        !_initialized ||
+        !state.isReady ||
+        state.isCapturing) {
+      return;
+    }
+    final previous = state.selectedPhotoResolution;
+    state = state.copyWith(
+      selectedPhotoResolution: resolution,
+      megapixels: resolution.megapixels,
+      errorMessage: null,
+    );
+    try {
+      final update = await _bridge.setPhotoResolution(resolution);
+      if (_isDisposed || !mounted) return;
+      _applyZoomUpdate(update);
+    } catch (error) {
+      if (_isDisposed || !mounted) return;
+      state = state.copyWith(
+        selectedPhotoResolution: previous,
+        megapixels: previous?.megapixels ?? kDefaultPhotoResolution.megapixels,
+        errorMessage: 'Could not set photo resolution: $error',
+      );
+    }
+  }
+
+  Future<void> setZoomFactor(double zoomFactor) async {
+    if (_isDisposed ||
+        state.isInitializing ||
+        !_initialized ||
+        !state.isReady ||
+        state.isCapturing) {
+      return;
+    }
+    final target = zoomFactor
+        .clamp(state.minZoomFactor, state.maxZoomFactor)
+        .toDouble();
+    state = state.copyWith(zoomFactor: target, errorMessage: null);
+    _pendingZoomFactor = target;
+    if (_isApplyingZoomFactor) return;
+
+    _isApplyingZoomFactor = true;
+    try {
+      while (!_isDisposed && mounted && _pendingZoomFactor != null) {
+        final requestedZoom = _pendingZoomFactor!;
+        _pendingZoomFactor = null;
+        try {
+          final update = await _bridge.setZoomFactor(requestedZoom);
+          if (_isDisposed || !mounted) return;
+          _applyZoomUpdate(update);
+        } catch (error) {
+          if (_isDisposed || !mounted) return;
+          state = state.copyWith(errorMessage: 'Could not set zoom: $error');
+          break;
+        }
+      }
+    } finally {
+      _isApplyingZoomFactor = false;
+    }
+  }
+
+  Future<void> setQuickZoomLevel(double zoomFactor) async {
+    await setZoomFactor(zoomFactor);
+  }
+
+  Future<void> setManualFocusDistance(double focusDistance) async {
+    if (_isDisposed ||
+        state.isInitializing ||
+        !_initialized ||
+        !state.isReady ||
+        !state.supportsManualFocus ||
+        state.isCapturing) {
+      return;
+    }
+    final target = focusDistance
+        .clamp(kCameraFocusDistanceMin, kCameraFocusDistanceMax)
+        .toDouble();
+    state = state.copyWith(
+      focusDistance: target,
+      isManualFocusActive: true,
+      errorMessage: null,
+    );
+    _pendingFocusDistance = target;
+    if (_isApplyingFocusDistance) return;
+
+    _isApplyingFocusDistance = true;
+    try {
+      while (!_isDisposed && mounted && _pendingFocusDistance != null) {
+        final requested = _pendingFocusDistance!;
+        _pendingFocusDistance = null;
+        try {
+          final update = await _bridge.setManualFocusDistance(requested);
+          if (_isDisposed || !mounted) return;
+          state = state.copyWith(
+            supportsManualFocus: update.supportsManualFocus,
+            focusDistance: update.focusDistance,
+            isManualFocusActive: update.isManualFocusActive,
+            errorMessage: null,
+          );
+        } catch (error) {
+          if (_isDisposed || !mounted) return;
+          state = state.copyWith(
+            errorMessage: 'Could not set manual focus: $error',
+          );
+          break;
+        }
+      }
+    } finally {
+      _isApplyingFocusDistance = false;
+    }
+  }
+
   Future<void> setExposureBias(double bias) async {
     if (_isDisposed ||
         state.isInitializing ||
@@ -236,17 +400,15 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     _isApplyingExposureBias = true;
     try {
       while (!_isDisposed && mounted && _pendingExposureBias != null) {
-        final requestBias = _pendingExposureBias!;
+        final requestBias = _pendingExposureBias!
+            .clamp(kCameraExposureBiasMin, kCameraExposureBiasMax)
+            .toDouble();
         _pendingExposureBias = null;
         try {
-          final applied = await _bridge.setExposureBias(requestBias);
+          final applied = await _applyExposureBiasSmoothly(requestBias);
           if (_isDisposed || !mounted) return;
-          state = state.copyWith(
-            exposureBias: applied
-                .clamp(kCameraExposureBiasMin, kCameraExposureBiasMax)
-                .toDouble(),
-            errorMessage: null,
-          );
+          _appliedExposureBias = applied;
+          state = state.copyWith(exposureBias: applied, errorMessage: null);
         } catch (error) {
           if (_isDisposed || !mounted) return;
           state = state.copyWith(
@@ -258,6 +420,45 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     } finally {
       _isApplyingExposureBias = false;
     }
+  }
+
+  Future<double> _applyExposureBiasSmoothly(double target) async {
+    var current = _appliedExposureBias
+        .clamp(kCameraExposureBiasMin, kCameraExposureBiasMax)
+        .toDouble();
+    final safeTarget = target
+        .clamp(kCameraExposureBiasMin, kCameraExposureBiasMax)
+        .toDouble();
+    if ((safeTarget - current).abs() < 0.0001) {
+      final applied = await _bridge.setExposureBias(safeTarget);
+      return applied
+          .clamp(kCameraExposureBiasMin, kCameraExposureBiasMax)
+          .toDouble();
+    }
+
+    final direction = safeTarget > current ? 1.0 : -1.0;
+    const stepSize = 0.08;
+    const stepDelay = Duration(milliseconds: 10);
+
+    while ((safeTarget - current).abs() > stepSize) {
+      if (_isDisposed || !mounted) return current;
+      if (_pendingExposureBias != null) return current;
+      final stepped = current + (direction * stepSize);
+      final appliedStep = await _bridge.setExposureBias(stepped);
+      current = appliedStep
+          .clamp(kCameraExposureBiasMin, kCameraExposureBiasMax)
+          .toDouble();
+      _appliedExposureBias = current;
+      if (_pendingExposureBias == null && !_isDisposed && mounted) {
+        state = state.copyWith(exposureBias: current, errorMessage: null);
+      }
+      await Future<void>.delayed(stepDelay);
+    }
+
+    final applied = await _bridge.setExposureBias(safeTarget);
+    return applied
+        .clamp(kCameraExposureBiasMin, kCameraExposureBiasMax)
+        .toDouble();
   }
 
   Future<void> setLookStrength(double strength) async {
@@ -320,6 +521,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
         isInitializing: false,
         captureState: CameraCaptureState.idle,
         lastCapture: result,
+        captureFeedbackVersion: state.captureFeedbackVersion + 1,
         latestThumbnail: thumb,
         errorMessage: null,
       );
@@ -357,6 +559,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     if (_cameraShutdownRequested) return;
     _cameraShutdownRequested = true;
     await _cancelHistogramSubscription();
+    await _cancelZoomSubscription();
     try {
       await _bridge.stopCamera();
     } catch (_) {
@@ -375,9 +578,29 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     await histogramSubscription?.cancel();
   }
 
+  Future<void> _cancelZoomSubscription() async {
+    final zoomSubscription = _zoomSubscription;
+    _zoomSubscription = null;
+    await zoomSubscription?.cancel();
+  }
+
   double get _activeIntensity {
     final simulation = lumaSimulationById(state.selectedSimulationId);
     return simulation.intensity;
+  }
+
+  void _applyZoomUpdate(CameraZoomUpdate update) {
+    final selectedResolution =
+        update.selectedPhotoResolution ?? state.selectedPhotoResolution;
+    state = state.copyWith(
+      zoomFactor: update.zoomFactor,
+      minZoomFactor: update.minZoomFactor,
+      maxZoomFactor: update.maxZoomFactor,
+      megapixels: update.megapixels,
+      availablePhotoResolutions: update.availablePhotoResolutions,
+      selectedPhotoResolution: selectedResolution,
+      errorMessage: null,
+    );
   }
 
   void _bindHistogramStream() {
@@ -394,6 +617,33 @@ class CameraUiController extends StateNotifier<CameraUiState> {
       },
       onError: (_) {
         // Histogram is optional and should never break capture flow.
+      },
+    );
+  }
+
+  void _bindZoomStream() {
+    if (_isDisposed || !mounted || !_isCameraRunning) return;
+    final previousSubscription = _zoomSubscription;
+    _zoomSubscription = null;
+    unawaited(previousSubscription?.cancel());
+    _zoomSubscription = _bridge.zoomStream().listen(
+      (update) {
+        if (_isDisposed || !mounted || !_isCameraRunning) return;
+        final hasChanged =
+            (state.zoomFactor - update.zoomFactor).abs() > 0.0001 ||
+            (state.minZoomFactor - update.minZoomFactor).abs() > 0.0001 ||
+            (state.maxZoomFactor - update.maxZoomFactor).abs() > 0.0001 ||
+            (state.megapixels - update.megapixels).abs() > 0.0001 ||
+            !listEquals(
+              state.availablePhotoResolutions,
+              update.availablePhotoResolutions,
+            ) ||
+            state.selectedPhotoResolution != update.selectedPhotoResolution;
+        if (!hasChanged) return;
+        _applyZoomUpdate(update);
+      },
+      onError: (_) {
+        // Zoom stream is optional and should not break camera usage.
       },
     );
   }

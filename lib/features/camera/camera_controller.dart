@@ -8,22 +8,124 @@ class CameraInitializeResult {
   final bool isReady;
   final bool supportsUltraWide;
   final bool supportsRawCapture;
+  final bool supportsAppleProRAWCapture;
   final CameraLensMode activeLensMode;
   final bool isAeAfLocked;
   final double exposureBias;
   final double lookStrength;
   final CameraCaptureFormat captureFormat;
+  final List<CameraCaptureFormat> availableCaptureFormats;
+  final double zoomFactor;
+  final double minZoomFactor;
+  final double maxZoomFactor;
+  final double megapixels;
+  final List<CameraPhotoResolution> availablePhotoResolutions;
+  final CameraPhotoResolution? selectedPhotoResolution;
+  final bool supportsManualFocus;
+  final double focusDistance;
+  final bool isManualFocusActive;
 
   const CameraInitializeResult({
     required this.isReady,
     required this.supportsUltraWide,
     required this.supportsRawCapture,
+    required this.supportsAppleProRAWCapture,
     required this.activeLensMode,
     required this.isAeAfLocked,
     required this.exposureBias,
     required this.lookStrength,
     required this.captureFormat,
+    required this.availableCaptureFormats,
+    required this.zoomFactor,
+    required this.minZoomFactor,
+    required this.maxZoomFactor,
+    required this.megapixels,
+    required this.availablePhotoResolutions,
+    required this.selectedPhotoResolution,
+    required this.supportsManualFocus,
+    required this.focusDistance,
+    required this.isManualFocusActive,
   });
+}
+
+@immutable
+class CameraZoomUpdate {
+  final double zoomFactor;
+  final double minZoomFactor;
+  final double maxZoomFactor;
+  final double megapixels;
+  final List<CameraPhotoResolution> availablePhotoResolutions;
+  final CameraPhotoResolution? selectedPhotoResolution;
+
+  const CameraZoomUpdate({
+    required this.zoomFactor,
+    required this.minZoomFactor,
+    required this.maxZoomFactor,
+    required this.megapixels,
+    required this.availablePhotoResolutions,
+    required this.selectedPhotoResolution,
+  });
+
+  factory CameraZoomUpdate.fromMap(Map<dynamic, dynamic>? map) {
+    final zoomFactorRaw = (map?['zoomFactor'] as num?)?.toDouble() ?? 1.0;
+    final minZoomRaw =
+        (map?['minZoomFactor'] as num?)?.toDouble() ??
+        kCameraZoomFactorMinDefault;
+    final maxZoomRaw =
+        (map?['maxZoomFactor'] as num?)?.toDouble() ??
+        kCameraZoomFactorMaxDefault;
+    final minZoom = minZoomRaw > 0 ? minZoomRaw : kCameraZoomFactorMinDefault;
+    final maxZoom = maxZoomRaw >= minZoom ? maxZoomRaw : minZoom;
+    final megapixelsRaw = (map?['megapixels'] as num?)?.toDouble() ?? 12.0;
+    final availablePhotoResolutions = _photoResolutionsFromPayload(
+      map?['availablePhotoResolutions'],
+    );
+    final selectedPhotoResolution =
+        CameraPhotoResolution.fromMap(
+          map?['selectedPhotoResolution'] as Map<dynamic, dynamic>?,
+        ) ??
+        (availablePhotoResolutions.isNotEmpty
+            ? availablePhotoResolutions.first
+            : null);
+    return CameraZoomUpdate(
+      zoomFactor: zoomFactorRaw.clamp(minZoom, maxZoom).toDouble(),
+      minZoomFactor: minZoom,
+      maxZoomFactor: maxZoom,
+      megapixels: megapixelsRaw.isFinite && megapixelsRaw > 0
+          ? megapixelsRaw
+          : 12.0,
+      availablePhotoResolutions: availablePhotoResolutions,
+      selectedPhotoResolution: selectedPhotoResolution,
+    );
+  }
+}
+
+@immutable
+class CameraManualFocusUpdate {
+  final bool supportsManualFocus;
+  final double focusDistance;
+  final bool isManualFocusActive;
+
+  const CameraManualFocusUpdate({
+    required this.supportsManualFocus,
+    required this.focusDistance,
+    required this.isManualFocusActive,
+  });
+
+  factory CameraManualFocusUpdate.fromMap(Map<dynamic, dynamic>? map) {
+    final supports = (map?['supportsManualFocus'] as bool?) ?? false;
+    final distanceRaw =
+        (map?['focusDistance'] as num?)?.toDouble() ?? kCameraFocusDistanceMin;
+    final distance = distanceRaw
+        .clamp(kCameraFocusDistanceMin, kCameraFocusDistanceMax)
+        .toDouble();
+    final active = (map?['isManualFocusActive'] as bool?) ?? false;
+    return CameraManualFocusUpdate(
+      supportsManualFocus: supports,
+      focusDistance: distance,
+      isManualFocusActive: supports && active,
+    );
+  }
 }
 
 abstract class CameraBridge {
@@ -43,10 +145,14 @@ abstract class CameraBridge {
   Future<void> setFlashMode(CameraFlashMode mode);
   Future<CameraLensMode> setLensMode(CameraLensMode mode);
   Future<CameraCaptureFormat> setCaptureFormat(CameraCaptureFormat format);
+  Future<CameraZoomUpdate> setPhotoResolution(CameraPhotoResolution resolution);
+  Future<CameraZoomUpdate> setZoomFactor(double factor);
+  Future<CameraManualFocusUpdate> setManualFocusDistance(double distance);
   Future<double> setExposureBias(double bias);
   Future<CameraCaptureResult> capturePhoto();
   Future<Uint8List?> latestThumbnail();
   Stream<List<double>> histogramStream();
+  Stream<CameraZoomUpdate> zoomStream();
   Future<void> disposeCamera();
 }
 
@@ -55,6 +161,7 @@ class MethodChannelCameraBridge implements CameraBridge {
   static const EventChannel _histogramChannel = EventChannel(
     'luma/camera_histogram',
   );
+  static const EventChannel _zoomChannel = EventChannel('luma/camera_zoom');
 
   const MethodChannelCameraBridge();
 
@@ -68,6 +175,8 @@ class MethodChannelCameraBridge implements CameraBridge {
         (response?['supportsUltraWide'] as bool?) ?? false;
     final supportsRawCapture =
         (response?['supportsRawCapture'] as bool?) ?? false;
+    final supportsAppleProRAWCapture =
+        (response?['supportsAppleProRAWCapture'] as bool?) ?? false;
     final activeLens = cameraLensModeFromWire(
       response?['activeLensMode'] as String?,
     );
@@ -79,10 +188,18 @@ class MethodChannelCameraBridge implements CameraBridge {
     final captureFormat = cameraCaptureFormatFromWire(
       response?['captureFormat'] as String?,
     );
+    final availableCaptureFormats = _captureFormatsFromPayload(
+      response?['availableCaptureFormats'],
+      supportsRawCapture: supportsRawCapture,
+      supportsAppleProRAWCapture: supportsAppleProRAWCapture,
+    );
+    final zoom = CameraZoomUpdate.fromMap(response);
+    final manualFocus = CameraManualFocusUpdate.fromMap(response);
     return CameraInitializeResult(
       isReady: isReady,
       supportsUltraWide: supportsUltraWide,
       supportsRawCapture: supportsRawCapture,
+      supportsAppleProRAWCapture: supportsAppleProRAWCapture,
       activeLensMode: activeLens,
       isAeAfLocked: isAeAfLocked,
       exposureBias: exposureBias,
@@ -90,6 +207,16 @@ class MethodChannelCameraBridge implements CameraBridge {
           .clamp(kCameraLookStrengthMin, kCameraLookStrengthMax)
           .toDouble(),
       captureFormat: captureFormat,
+      availableCaptureFormats: availableCaptureFormats,
+      zoomFactor: zoom.zoomFactor,
+      minZoomFactor: zoom.minZoomFactor,
+      maxZoomFactor: zoom.maxZoomFactor,
+      megapixels: zoom.megapixels,
+      availablePhotoResolutions: zoom.availablePhotoResolutions,
+      selectedPhotoResolution: zoom.selectedPhotoResolution,
+      supportsManualFocus: manualFocus.supportsManualFocus,
+      focusDistance: manualFocus.focusDistance,
+      isManualFocusActive: manualFocus.isManualFocusActive,
     );
   }
 
@@ -164,6 +291,37 @@ class MethodChannelCameraBridge implements CameraBridge {
   }
 
   @override
+  Future<CameraZoomUpdate> setPhotoResolution(
+    CameraPhotoResolution resolution,
+  ) async {
+    final response = await _channel.invokeMapMethod<String, dynamic>(
+      'setPhotoResolution',
+      {'width': resolution.width, 'height': resolution.height},
+    );
+    return CameraZoomUpdate.fromMap(response);
+  }
+
+  @override
+  Future<CameraZoomUpdate> setZoomFactor(double factor) async {
+    final response = await _channel.invokeMapMethod<String, dynamic>(
+      'setZoomFactor',
+      {'zoomFactor': factor},
+    );
+    return CameraZoomUpdate.fromMap(response);
+  }
+
+  @override
+  Future<CameraManualFocusUpdate> setManualFocusDistance(
+    double distance,
+  ) async {
+    final response = await _channel.invokeMapMethod<String, dynamic>(
+      'setManualFocusDistance',
+      {'focusDistance': distance},
+    );
+    return CameraManualFocusUpdate.fromMap(response);
+  }
+
+  @override
   Future<double> setExposureBias(double bias) async {
     final response = await _channel.invokeMapMethod<String, dynamic>(
       'setExposureBias',
@@ -201,9 +359,67 @@ class MethodChannelCameraBridge implements CameraBridge {
   }
 
   @override
+  Stream<CameraZoomUpdate> zoomStream() {
+    return _zoomChannel.receiveBroadcastStream().map(
+      (event) => CameraZoomUpdate.fromMap(
+        event is Map<dynamic, dynamic> ? event : null,
+      ),
+    );
+  }
+
+  @override
   Future<void> disposeCamera() async {
     await _channel.invokeMethod<void>('disposeCamera');
   }
+}
+
+List<CameraCaptureFormat> _captureFormatsFromPayload(
+  dynamic raw, {
+  required bool supportsRawCapture,
+  required bool supportsAppleProRAWCapture,
+}) {
+  final formats = <CameraCaptureFormat>[];
+  if (raw is List) {
+    for (final item in raw) {
+      formats.add(cameraCaptureFormatFromWire(item as String?));
+    }
+  }
+  if (formats.isEmpty) {
+    formats.add(CameraCaptureFormat.heic);
+    formats.add(CameraCaptureFormat.jpg);
+    if (supportsRawCapture) {
+      formats.add(CameraCaptureFormat.raw);
+    }
+    if (supportsAppleProRAWCapture) {
+      formats.add(CameraCaptureFormat.proRaw);
+    }
+  }
+  final unique = <CameraCaptureFormat>[];
+  for (final format in formats) {
+    if (!unique.contains(format)) {
+      unique.add(format);
+    }
+  }
+  return List<CameraCaptureFormat>.unmodifiable(unique);
+}
+
+List<CameraPhotoResolution> _photoResolutionsFromPayload(dynamic raw) {
+  if (raw is! List) {
+    return const <CameraPhotoResolution>[];
+  }
+  final resolutions = <CameraPhotoResolution>[];
+  for (final item in raw) {
+    final resolution = CameraPhotoResolution.fromMap(
+      item as Map<dynamic, dynamic>?,
+    );
+    if (resolution != null && !resolutions.contains(resolution)) {
+      resolutions.add(resolution);
+    }
+  }
+  resolutions.sort(
+    (left, right) => left.megapixels.compareTo(right.megapixels),
+  );
+  return List<CameraPhotoResolution>.unmodifiable(resolutions);
 }
 
 List<double> parseCameraHistogramPayload(dynamic payload) {
