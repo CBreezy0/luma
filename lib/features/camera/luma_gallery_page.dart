@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../export/export_sheet.dart';
+import '../export/native_share_bridge.dart';
 import '../library/library_models.dart';
 import '../library/library_provider.dart';
 import '../library/library_viewer_page.dart';
@@ -175,18 +177,55 @@ class _LumaGalleryPageState extends ConsumerState<LumaGalleryPage> {
 
   Future<void> _exportSelected() async {
     if (_selectedIds.isEmpty) return;
-    final controller = ref.read(lumaLibraryProvider.notifier);
-    var exported = 0;
-    for (final id in _selectedIds) {
-      final path = await controller.exportPhoto(id);
-      if (path != null) exported += 1;
-    }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Exported $exported photo(s) to LumaLibrary/Edited'),
-      ),
+    final action = await showLumaExportSheet(
+      context,
+      itemCount: _selectedIds.length,
     );
+    if (!mounted || action == null) return;
+
+    final controller = ref.read(lumaLibraryProvider.notifier);
+    final exportResults = await Future.wait(
+      _selectedIds.map(controller.exportPhoto),
+    );
+    final exportedPaths = exportResults.whereType<String>().toList(
+      growable: false,
+    );
+    if (!mounted) return;
+    if (exportedPaths.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Export failed')));
+      return;
+    }
+
+    try {
+      switch (action) {
+        case LumaExportAction.share:
+          await NativeShareBridge.shareFiles(
+            exportedPaths,
+            subject: 'Luma Export',
+          );
+          break;
+        case LumaExportAction.saveToCameraRoll:
+          await NativeShareBridge.saveFilesToPhotos(exportedPaths);
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Saved ${exportedPaths.length} photo(s) to Camera Roll',
+              ),
+            ),
+          );
+          break;
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Export failed: $error')));
+      return;
+    }
+
     setState(() {
       _selectedIds.clear();
     });
@@ -256,6 +295,27 @@ class _LumaGalleryPageState extends ConsumerState<LumaGalleryPage> {
   String _ratingFilterLabel(int minimumRating) {
     if (minimumRating <= 0) return 'All ratings';
     return '$minimumRating★ & up';
+  }
+
+  Widget _photoPlaceholder() {
+    return const Icon(Icons.photo_outlined, color: Colors.white54);
+  }
+
+  Widget _buildFullImageFallback(LumaPhoto photo) {
+    final fallbackPath = photo.workingPath.isNotEmpty
+        ? photo.workingPath
+        : photo.originalPath;
+    if (fallbackPath.isEmpty) {
+      return _photoPlaceholder();
+    }
+    return Image.file(
+      File(fallbackPath),
+      fit: BoxFit.cover,
+      cacheWidth: 720,
+      errorBuilder: (context, error, stackTrace) {
+        return _photoPlaceholder();
+      },
+    );
   }
 
   @override
@@ -503,9 +563,8 @@ class _LumaGalleryPageState extends ConsumerState<LumaGalleryPage> {
                                                       photo.photoId,
                                                     ),
                                               );
-                                              return const Icon(
-                                                Icons.photo_outlined,
-                                                color: Colors.white54,
+                                              return _buildFullImageFallback(
+                                                photo,
                                               );
                                             },
                                       )
@@ -518,10 +577,7 @@ class _LumaGalleryPageState extends ConsumerState<LumaGalleryPage> {
                                                 )
                                                 .ensureThumbnail(photo.photoId),
                                           );
-                                          return const Icon(
-                                            Icons.photo_outlined,
-                                            color: Colors.white54,
-                                          );
+                                          return _buildFullImageFallback(photo);
                                         },
                                       ),
                               ),

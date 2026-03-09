@@ -344,15 +344,19 @@ class LumaLibraryRepository {
       importedDateMs: 0,
       width: capture.width,
       height: capture.height,
-      lens: null,
-      iso: null,
-      shutterSpeed: null,
-      aperture: null,
-      focalLength: null,
-      location: null,
+      lens: capture.lens,
+      iso: capture.iso,
+      shutterSpeed: capture.shutterSpeed,
+      aperture: capture.aperture,
+      focalLength: capture.focalLength,
+      location: capture.location,
       simulationId: capture.simulationId,
     );
     await savePhoto(photo);
+    await _preserveRawCompanionIfPresent(
+      rawSourcePath: capture.rawFilePath,
+      photoId: photo.photoId,
+    );
     return photo;
   }
 
@@ -444,11 +448,12 @@ class LumaLibraryRepository {
     final sourceFile = File(sourcePath);
     if (!await sourceFile.exists()) return null;
 
-    final root = await _resolveRootDirectory();
+    final tempRoot = await getTemporaryDirectory();
+    final exportDirectory = Directory(_join(tempRoot.path, 'LumaExports'));
+    await exportDirectory.create(recursive: true);
     final ext = _normalizedExtension(sourcePath, photo.format);
     final exportPath = _join(
-      root.path,
-      'Edited',
+      exportDirectory.path,
       '${photo.photoId}_${DateTime.now().millisecondsSinceEpoch}.$ext',
     );
     await _copyFile(sourcePath, exportPath);
@@ -528,9 +533,25 @@ class LumaLibraryRepository {
     Set<String> photoIds,
     List<LumaEditInstruction> instructions,
   ) async {
-    for (final photoId in photoIds) {
-      await addEditVersion(photoId, instructions);
-    }
+    if (photoIds.isEmpty || instructions.isEmpty) return;
+    await updatePhotos(photoIds, (photo) {
+      final createdAtMs = DateTime.now().millisecondsSinceEpoch;
+      final version = LumaPhotoVersion(
+        versionId: _versionId(photo.photoId),
+        name: 'Edit ${photo.versions.length + 1}',
+        createdAtMs: createdAtMs,
+        instructions: List<LumaEditInstruction>.from(instructions),
+        renderedPath: null,
+      );
+      return photo.copyWith(
+        versions: List<LumaPhotoVersion>.unmodifiable([
+          ...photo.versions,
+          version,
+        ]),
+        activeVersionId: version.versionId,
+        lastEditedAtMs: createdAtMs,
+      );
+    });
   }
 
   Future<List<LumaPhoto>> searchPhotos(String query) async {
@@ -666,6 +687,27 @@ class LumaLibraryRepository {
     );
   }
 
+  Future<void> _preserveRawCompanionIfPresent({
+    required String? rawSourcePath,
+    required String photoId,
+  }) async {
+    if (rawSourcePath == null || rawSourcePath.isEmpty) return;
+    final rawSource = File(rawSourcePath);
+    if (!await rawSource.exists()) return;
+
+    final root = await _resolveRootDirectory();
+    final rawExt = _normalizedExtension(rawSourcePath, LumaPhotoFormat.raw);
+    final originalRawPath = _join(
+      root.path,
+      'Originals',
+      '${photoId}_raw.$rawExt',
+    );
+    final workingRawPath = _join(root.path, 'RAW', '${photoId}_raw.$rawExt');
+
+    await _copyFile(rawSourcePath, originalRawPath);
+    await _copyFile(originalRawPath, workingRawPath);
+  }
+
   PhotoRecord _recordFromPhoto(LumaPhoto photo) {
     final record = PhotoRecord()
       ..photoId = photo.photoId
@@ -697,7 +739,9 @@ class LumaLibraryRepository {
       ..lastEditedAtMs = photo.lastEditedAtMs
       ..activeVersionId = photo.activeVersionId
       ..versionsJson = jsonEncode(
-        photo.versions.map((version) => version.toJson()).toList(growable: false),
+        photo.versions
+            .map((version) => version.toJson())
+            .toList(growable: false),
       );
     return record;
   }
@@ -743,7 +787,8 @@ class LumaLibraryRepository {
       thumbnailPath: record.thumbnailPath,
       lastEditedAtMs: record.lastEditedAtMs,
       versions: List<LumaPhotoVersion>.unmodifiable(effectiveVersions),
-      activeVersionId: record.activeVersionId ?? effectiveVersions.last.versionId,
+      activeVersionId:
+          record.activeVersionId ?? effectiveVersions.last.versionId,
     );
   }
 
@@ -757,9 +802,8 @@ class LumaLibraryRepository {
       return decoded
           .whereType<Map>()
           .map(
-            (item) => LumaPhotoVersion.fromJson(
-              Map<String, dynamic>.from(item),
-            ),
+            (item) =>
+                LumaPhotoVersion.fromJson(Map<String, dynamic>.from(item)),
           )
           .toList(growable: false);
     } catch (_) {

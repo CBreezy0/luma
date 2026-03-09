@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image/image.dart' as img;
 
+import '../export/export_sheet.dart';
+import '../export/native_share_bridge.dart';
 import '../editor/editor_navigation.dart';
 import 'library_models.dart';
 import 'library_provider.dart';
@@ -74,14 +76,39 @@ class _LumaLibraryViewerPageState extends ConsumerState<LumaLibraryViewerPage> {
   }
 
   Future<void> _exportCurrent(LumaPhoto photo) async {
+    final action = await showLumaExportSheet(context, itemCount: 1);
+    if (!mounted || action == null) return;
+
     final path = await ref
         .read(lumaLibraryProvider.notifier)
         .exportPhoto(photo.photoId);
     if (!mounted) return;
-    final text = path == null
-        ? 'Export failed'
-        : 'Exported to LumaLibrary/Edited';
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    if (path == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Export failed')));
+      return;
+    }
+
+    try {
+      switch (action) {
+        case LumaExportAction.share:
+          await NativeShareBridge.shareFiles([path], subject: 'Luma Export');
+          break;
+        case LumaExportAction.saveToCameraRoll:
+          await NativeShareBridge.saveFilesToPhotos([path]);
+          if (!mounted) return;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Saved to Camera Roll')));
+          break;
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Export failed: $error')));
+    }
   }
 
   Future<void> _openEditor(LumaPhoto photo) async {

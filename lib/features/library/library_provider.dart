@@ -127,6 +127,7 @@ class LumaLibraryController extends StateNotifier<LumaLibraryState> {
   bool _disposed = false;
   bool _didScheduleThumbnailRecovery = false;
   Timer? _thumbnailRecoveryDebounce;
+  Timer? _searchDebounce;
 
   LumaLibraryController(this._repository, this._thumbnailService)
     : super(LumaLibraryState.initial()) {
@@ -231,8 +232,13 @@ class LumaLibraryController extends StateNotifier<LumaLibraryState> {
 
   void setSearchQuery(String query) {
     if (_disposed) return;
+    if (state.searchQuery == query) return;
     state = state.copyWith(searchQuery: query);
-    unawaited(_reload(reset: true));
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 220), () {
+      if (_disposed || !mounted) return;
+      unawaited(_reload(reset: true));
+    });
   }
 
   Future<void> saveCapturedPhoto(CameraCaptureResult capture) async {
@@ -379,6 +385,7 @@ class LumaLibraryController extends StateNotifier<LumaLibraryState> {
   @override
   void dispose() {
     _disposed = true;
+    _searchDebounce?.cancel();
     _thumbnailRecoveryDebounce?.cancel();
     _thumbnailUpdatesSubscription?.cancel();
     unawaited(_repository.close());
