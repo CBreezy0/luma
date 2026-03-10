@@ -1,11 +1,17 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:isar/isar.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'features/camera/camera_page.dart';
+// ignore: unused_import
+import 'package:isar_flutter_libs/isar_flutter_libs.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  await Isar.initializeIsarCore(download: false);
+
   runApp(const ProviderScope(child: LumaApp()));
 }
 
