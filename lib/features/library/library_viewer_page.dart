@@ -29,7 +29,7 @@ class _LumaLibraryViewerPageState extends ConsumerState<LumaLibraryViewerPage> {
   late final PageController _pageController;
   final TransformationController _zoomController = TransformationController();
   int _currentIndex = 0;
-  bool _showMetadata = true;
+  bool _showInfo = false;
   LumaHistogramMode _histogramMode = LumaHistogramMode.off;
 
   @override
@@ -70,6 +70,7 @@ class _LumaLibraryViewerPageState extends ConsumerState<LumaLibraryViewerPage> {
     if (_currentIndex > maxIndex) {
       setState(() {
         _currentIndex = maxIndex;
+        _showInfo = false;
       });
       _pageController.jumpToPage(maxIndex);
     }
@@ -305,10 +306,10 @@ class _LumaLibraryViewerPageState extends ConsumerState<LumaLibraryViewerPage> {
             onPressed: _cycleHistogramMode,
           ),
           IconButton(
-            icon: Icon(_showMetadata ? Icons.info : Icons.info_outline),
+            icon: Icon(_showInfo ? Icons.info : Icons.info_outline),
             onPressed: () {
               setState(() {
-                _showMetadata = !_showMetadata;
+                _showInfo = !_showInfo;
               });
             },
           ),
@@ -322,6 +323,7 @@ class _LumaLibraryViewerPageState extends ConsumerState<LumaLibraryViewerPage> {
             onPageChanged: (index) {
               setState(() {
                 _currentIndex = index;
+                _showInfo = false;
               });
               _zoomController.value = Matrix4.identity();
             },
@@ -350,13 +352,25 @@ class _LumaLibraryViewerPageState extends ConsumerState<LumaLibraryViewerPage> {
               );
             },
           ),
-          if (_showMetadata)
-            Positioned(
-              left: 12,
-              right: 12,
-              bottom: 88,
-              child: _MetadataPanel(photo: current),
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: 88,
+            child: IgnorePointer(
+              ignoring: !_showInfo,
+              child: AnimatedSlide(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                offset: _showInfo ? Offset.zero : const Offset(0, 0.12),
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOut,
+                  opacity: _showInfo ? 1 : 0,
+                  child: _MetadataPanel(photo: current),
+                ),
+              ),
             ),
+          ),
           if (_histogramMode != LumaHistogramMode.off)
             Positioned(
               left: 12,

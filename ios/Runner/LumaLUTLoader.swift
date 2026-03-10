@@ -3,6 +3,12 @@ import Foundation
 
 enum LumaColorPipeline {
   static let workingColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+  static let sharedCIContext: CIContext = CIContext(options: [
+    .useSoftwareRenderer: false,
+    .cacheIntermediates: false,
+    .workingColorSpace: workingColorSpace,
+    .outputColorSpace: workingColorSpace,
+  ])
 }
 
 struct LumaLUTCubeDescriptor {
@@ -14,7 +20,7 @@ struct LumaLUTCubeDescriptor {
 final class LumaLUTLoader {
   static let shared = LumaLUTLoader()
 
-  private enum LUTPreset: String {
+  private enum LUTPreset: String, CaseIterable {
     case slate
     case ember
     case bloom
@@ -33,8 +39,8 @@ final class LumaLUTLoader {
 
   private let cubeDimension = 32
   private let colorSpace = LumaColorPipeline.workingColorSpace
-  private let lock = NSLock()
-  private var cubeDataCache: [String: LumaLUTCubeDescriptor] = [:]
+  private static let lock = NSLock()
+  private static var cubeDataCache: [String: LumaLUTCubeDescriptor] = [:]
 
   private init() {}
 
@@ -48,16 +54,22 @@ final class LumaLUTLoader {
     }
   }
 
+  func preloadAllDescriptors() {
+    for preset in LUTPreset.allCases {
+      _ = cubeDescriptor(named: preset.rawValue)
+    }
+  }
+
   private func cachedDescriptor(
     forKey key: String,
     generator: () -> Data
   ) -> LumaLUTCubeDescriptor {
-    lock.lock()
-    if let cached = cubeDataCache[key] {
-      lock.unlock()
+    Self.lock.lock()
+    if let cached = Self.cubeDataCache[key] {
+      Self.lock.unlock()
       return cached
     }
-    lock.unlock()
+    Self.lock.unlock()
 
     let descriptor = LumaLUTCubeDescriptor(
       dimension: cubeDimension,
@@ -65,9 +77,9 @@ final class LumaLUTLoader {
       colorSpace: colorSpace
     )
 
-    lock.lock()
-    cubeDataCache[key] = descriptor
-    lock.unlock()
+    Self.lock.lock()
+    Self.cubeDataCache[key] = descriptor
+    Self.lock.unlock()
 
     return descriptor
   }

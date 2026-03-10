@@ -30,21 +30,26 @@ final class LumaPreviewProcessor {
     filmPipeline = LumaFilmRenderPipeline(mode: .preview, lutLoader: lutLoader)
   }
 
+  func prepareResources() {
+    filmPipeline.prepareResources()
+  }
+
   func processPreviewFrame(
     _ image: CIImage,
-    simulationId: String,
+    simulation: LumaFilmSimulationInstance,
     simulationIntensity: Double,
     lookStrength: Double,
     applyEnhancement: Bool,
     processingMode: LumaPreviewProcessingMode
   ) -> CIImage {
     let effectiveEnhancement = applyEnhancement && processingMode == .standard
-    let effectiveLookStrength = processingMode == .reduced
+    let effectiveLookStrength =
+      processingMode == .reduced
       ? min(lookStrength, 0.9)
       : lookStrength
     return filmPipeline.render(
       image,
-      simulationId: simulationId,
+      simulation: simulation,
       simulationIntensity: simulationIntensity,
       lookStrength: effectiveLookStrength,
       allowEnhancement: effectiveEnhancement,

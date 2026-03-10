@@ -3,6 +3,69 @@ import Foundation
 
 // MARK: - Film Look Metadata
 
+final class LumaFilmSimulationInstance {
+  let id: String
+  let profile: LumaLookProfile
+
+  init(id: String, profile: LumaLookProfile) {
+    self.id = id
+    self.profile = profile
+  }
+}
+
+final class LumaFilmSimulationManager {
+  static let shared = LumaFilmSimulationManager()
+
+  private let lock = NSLock()
+  private var simulations: [String: LumaFilmSimulationInstance] = [:]
+
+  private init() {}
+
+  func preloadSimulations() {
+    lock.lock()
+    if !simulations.isEmpty {
+      lock.unlock()
+      return
+    }
+    lock.unlock()
+
+    var loaded: [String: LumaFilmSimulationInstance] = [:]
+    for simulationId in LumaFilmSimulation.supportedSimulationIds {
+      let normalizedId = LumaFilmSimulation.normalizedSimulationId(simulationId)
+      loaded[normalizedId] = LumaFilmSimulationInstance(
+        id: normalizedId,
+        profile: LumaFilmSimulation.lookProfile(for: normalizedId)
+      )
+    }
+
+    lock.lock()
+    if simulations.isEmpty {
+      simulations = loaded
+    }
+    lock.unlock()
+  }
+
+  func simulation(for id: String) -> LumaFilmSimulationInstance {
+    preloadSimulations()
+    let normalizedId = LumaFilmSimulation.normalizedSimulationId(id)
+
+    lock.lock()
+    let simulation =
+      simulations[normalizedId] ?? simulations[LumaFilmSimulation.defaultSimulationId]
+    lock.unlock()
+
+    return simulation!
+  }
+
+  func allSimulations() -> [LumaFilmSimulationInstance] {
+    preloadSimulations()
+    lock.lock()
+    let all = LumaFilmSimulation.supportedSimulationIds.compactMap { simulations[$0] }
+    lock.unlock()
+    return all
+  }
+}
+
 enum LumaFilmSimulation {
   static let defaultSimulationId = "original"
 
@@ -20,8 +83,21 @@ enum LumaFilmSimulation {
     supportedSimulationIds.contains(simulationId) ? simulationId : defaultSimulationId
   }
 
+  private static let cachedLookProfiles: [String: LumaLookProfile] = {
+    var profiles: [String: LumaLookProfile] = [:]
+    for simulationId in supportedSimulationIds {
+      profiles[simulationId] = makeLookProfile(forNormalizedId: simulationId)
+    }
+    return profiles
+  }()
+
   static func lookProfile(for simulationId: String) -> LumaLookProfile {
-    switch normalizedSimulationId(simulationId) {
+    let normalizedId = normalizedSimulationId(simulationId)
+    return cachedLookProfiles[normalizedId] ?? cachedLookProfiles[defaultSimulationId]!
+  }
+
+  private static func makeLookProfile(forNormalizedId simulationId: String) -> LumaLookProfile {
+    switch simulationId {
     case "slate":
       return LumaLookProfile(
         lutPresetName: "slate",
@@ -321,20 +397,25 @@ final class LumaFilmRenderPipeline {
     self.lutLoader = lutLoader
   }
 
+  func prepareResources() {
+    for simulation in LumaFilmSimulationManager.shared.allSimulations() {
+      guard let presetName = simulation.profile.lutPresetName else { continue }
+      _ = lutFilter(for: presetName)
+    }
+  }
+
   func render(
     _ image: CIImage,
-    simulationId: String,
+    simulation: LumaFilmSimulationInstance,
     simulationIntensity: Double,
     lookStrength: Double,
     allowEnhancement: Bool,
     shouldDenoise: Bool,
     captureISO: Float? = nil
   ) -> CIImage {
-    let safeSimulationId = LumaFilmSimulation.normalizedSimulationId(simulationId)
     let safeIntensity = clamp01(simulationIntensity)
     let safeStrength = clamp01(lookStrength)
 
-    // Neutral preview base / neutral capture base.
     let neutralBase = prepareNeutralBase(
       image,
       allowEnhancement: allowEnhancement,
@@ -342,10 +423,9 @@ final class LumaFilmRenderPipeline {
       captureISO: captureISO
     )
 
-    let profile = LumaFilmSimulation.lookProfile(for: safeSimulationId)
+    let profile = simulation.profile
     let creativeOutput: CIImage
 
-    // Creative look transform.
     if profile.isOriginal || safeIntensity < 0.0001 {
       creativeOutput = neutralBase
     } else {
@@ -369,7 +449,6 @@ final class LumaFilmRenderPipeline {
       )
     }
 
-    // Final still processing / polish.
     return applyFinalPolish(
       blendedCreative,
       profile: profile,
@@ -392,9 +471,6 @@ final class LumaFilmRenderPipeline {
     )
     var output = image
 
-    // Neutral base preparation:
-    // light denoise, mild highlight compression, slight shadow lift,
-    // and a restrained neutral tone curve.
     if config.noiseReductionLevel > 0.0001,
       let noiseReductionFilter
     {
@@ -430,8 +506,6 @@ final class LumaFilmRenderPipeline {
   ) -> CIImage {
     var output = image
 
-    // Creative look transform:
-    // LUT color character, subtle per-look tonal bias, and restrained color tuning.
     if let presetName = profile.lutPresetName {
       output = applyLUTColorCharacter(
         output,
@@ -492,12 +566,12 @@ final class LumaFilmRenderPipeline {
       return output
     }
 
-    // Final still processing:
-    // subtle sharpening for processed stills and look grain only on saved output.
-    let effectiveProfile = creativeStrength > 0.0001
+    let effectiveProfile =
+      creativeStrength > 0.0001
       ? profile
       : LumaFilmSimulation.lookProfile(for: LumaFilmSimulation.defaultSimulationId)
-    let baseSharpenAmount = allowEnhancement
+    let baseSharpenAmount =
+      allowEnhancement
       ? effectiveProfile.stillSharpenAmount
       : effectiveProfile.stillSharpenAmount * 0.55
     let sharpenAmount = baseSharpenAmount * sharpenScale(for: captureISO)
@@ -513,7 +587,8 @@ final class LumaFilmRenderPipeline {
     if creativeStrength > 0.0001,
       !effectiveProfile.isOriginal
     {
-      let grainAmount = effectiveProfile.grainAmount
+      let grainAmount =
+        effectiveProfile.grainAmount
         * creativeStrength
         * grainScale(for: captureISO)
       output = applyOptionalGrain(output, amount: grainAmount)
@@ -528,21 +603,8 @@ final class LumaFilmRenderPipeline {
     intensity: Double
   ) -> CIImage {
     guard intensity > 0.0001 else { return image }
-    guard let cube = lutLoader.cubeDescriptor(named: presetName) else {
+    guard let filter = lutFilter(for: presetName) else {
       return image
-    }
-    let filter: CIFilter
-    if let cached = lutFilters[presetName] {
-      filter = cached
-    } else {
-      guard let created = CIFilter(name: "CIColorCubeWithColorSpace") else {
-        return image
-      }
-      created.setValue(cube.dimension, forKey: "inputCubeDimension")
-      created.setValue(cube.cubeData, forKey: "inputCubeData")
-      created.setValue(cube.colorSpace, forKey: "inputColorSpace")
-      lutFilters[presetName] = created
-      filter = created
     }
 
     filter.setValue(image, forKey: kCIInputImageKey)
@@ -553,6 +615,22 @@ final class LumaFilmRenderPipeline {
     return blendWithBase(base: image, processed: transformed, strength: intensity)
   }
 
+  private func lutFilter(for presetName: String) -> CIFilter? {
+    if let cached = lutFilters[presetName] {
+      return cached
+    }
+    guard let cube = lutLoader.cubeDescriptor(named: presetName) else {
+      return nil
+    }
+    guard let created = CIFilter(name: "CIColorCubeWithColorSpace") else {
+      return nil
+    }
+    created.setValue(cube.dimension, forKey: "inputCubeDimension")
+    created.setValue(cube.cubeData, forKey: "inputCubeData")
+    created.setValue(cube.colorSpace, forKey: "inputColorSpace")
+    lutFilters[presetName] = created
+    return created
+  }
   private func applyOptionalGrain(_ image: CIImage, amount: Double) -> CIImage {
     guard amount > 0.0001 else {
       return image

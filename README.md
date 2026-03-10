@@ -13,6 +13,18 @@ Luma is designed around a photographer-first flow:
 
 The app is Flutter-driven at the feature layer, while performance-sensitive imaging work stays in native Swift.
 
+## Luma v2
+
+Luma v2 highlights the current beta direction:
+
+- computational photography pipeline
+- HDR multi-frame capture
+- RAW workflows
+- film simulation improvements
+- tone-mapped preview pipeline
+- Isar powered gallery
+- background thumbnail generation
+
 ## Camera System
 
 The camera system is implemented with AVFoundation and exposed to Flutter through a native plugin.

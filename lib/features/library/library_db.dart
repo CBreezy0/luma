@@ -9,8 +9,6 @@ class LumaLibraryDb {
   final String name;
 
   Isar? _isar;
-  static Future<void>? _isarCoreInitialization;
-
   LumaLibraryDb({required this.directory, required this.name});
 
   Future<void> initialize() async {
@@ -247,24 +245,13 @@ class LumaLibraryDb {
       return existing;
     }
 
-    await _ensureIsarCoreInitialized();
     final opened = await Isar.open(
       [PhotoRecordSchema],
       directory: directory.path,
       name: name,
+      inspector: false,
     );
     _isar = opened;
     return opened;
-  }
-
-  Future<void> _ensureIsarCoreInitialized() async {
-    final initialization = _isarCoreInitialization ??= (() async {
-      try {
-        await Isar.initializeIsarCore(download: true);
-      } catch (_) {
-        // In Flutter apps the core library may already be bundled.
-      }
-    })();
-    await initialization;
   }
 }

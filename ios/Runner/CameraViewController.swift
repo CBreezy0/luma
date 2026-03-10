@@ -1,6 +1,6 @@
 import AVFoundation
-import CoreLocation
 import CoreImage
+import CoreLocation
 import ImageIO
 import UIKit
 
@@ -103,6 +103,7 @@ struct FocusPointUpdate {
 }
 
 private typealias CaptureSnapshot = (
+  simulation: LumaFilmSimulationInstance,
   simulationId: String,
   simulationIntensity: Double,
   lookStrength: Double,
@@ -164,7 +165,9 @@ final class CameraPreviewContainerView: UIView {
   }
 }
 
-final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCapturePhotoCaptureDelegate, CLLocationManagerDelegate {
+final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
+  AVCapturePhotoCaptureDelegate, CLLocationManagerDelegate
+{
   let previewView = CameraPreviewContainerView()
 
   private let previewImageView = UIImageView()
@@ -174,8 +177,15 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   private let photoOutput = AVCapturePhotoOutput()
 
   private let sessionQueue = DispatchQueue(label: "com.luma.camera.session", qos: .userInitiated)
-  private let previewQueue = DispatchQueue(label: "com.luma.camera.preview", qos: .userInitiated)
+  private let previewQueue = DispatchQueue(label: "luma.preview.processing", qos: .userInitiated)
+  private let captureProcessingQueue = DispatchQueue(
+    label: "com.luma.camera.capture-processing",
+    qos: .userInitiated
+  )
   private let stateQueue = DispatchQueue(label: "com.luma.camera.state")
+  private let previewStateLock = NSLock()
+  private let previewGeometryLock = NSLock()
+  private let locationQueue = DispatchQueue(label: "com.luma.camera.location", qos: .utility)
   private lazy var locationManager: CLLocationManager = {
     let manager = CLLocationManager()
     manager.delegate = self
@@ -185,6 +195,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   }()
 
   private let ciContext: CIContext
+  private let filmSimulationManager = LumaFilmSimulationManager.shared
   private let lutLoader = LumaLUTLoader.shared
   private let workingColorSpace = LumaColorPipeline.workingColorSpace
   private lazy var previewProcessor = LumaPreviewProcessor(
@@ -203,9 +214,15 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   private var captureCompletion: ((Result<[String: Any], Error>) -> Void)?
 
   private var _simulationId = LumaFilmSimulation.defaultSimulationId
+  private var _currentSimulation = LumaFilmSimulationManager.shared.simulation(
+    for: LumaFilmSimulation.defaultSimulationId)
+  private var _previewSimulation = LumaFilmSimulationManager.shared.simulation(
+    for: LumaFilmSimulation.defaultSimulationId)
   private var _simulationIntensity = 1.0
+  private var _previewSimulationIntensity = 1.0
   private var _isAeAfLocked = false
   private var _lookStrength = 1.0
+  private var _previewLookStrength = 1.0
   private var _exposureBias = 0.0
   private var _lensMode: CameraControllerLensMode = .wide
   private var _flashMode: CameraControllerFlashMode = .auto
@@ -214,6 +231,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   private var _captureCameraPosition: AVCaptureDevice.Position = .back
   private var _captureFormatForCurrentPhoto: CameraControllerCaptureFormat = .heic
   private var _didTemporarilyLockExposureForCapture = false
+  private var _cachedPreviewBounds: CGRect = .zero
+  private var _cachedInterfaceOrientation: UIInterfaceOrientation = .portrait
   private var _zoomFactor: Double = 1.0
   private var _minZoomFactor: Double = 1.0
   private var _maxZoomFactor: Double = 5.0
@@ -233,6 +252,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     label: "com.luma.camera.histogram",
     qos: .utility
   )
+  private let histogramScaleFilter = CIFilter(name: "CILanczosScaleTransform")
+  private let histogramAreaFilter = CIFilter(name: "CIAreaHistogram")
   private let histogramBinCount = 96
   private let histogramDownsampleWidth: CGFloat = 144
   private let histogramMinInterval: TimeInterval = 0.1
@@ -268,6 +289,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   private var rawPlusProcessedRawData: Data?
   private var rawPlusProcessedProcessedData: Data?
   private var rawPlusProcessedProcessedMetadata: [AnyHashable: Any]?
+  private var hasPreparedImageProcessingResources = false
   private var hasRequestedLocationAuthorization = false
   private lazy var gpsDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
@@ -285,12 +307,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   }()
 
   override init() {
-    ciContext = CIContext(options: [
-      .useSoftwareRenderer: false,
-      .cacheIntermediates: true,
-      .workingColorSpace: workingColorSpace,
-      .outputColorSpace: workingColorSpace,
-    ])
+    ciContext = LumaColorPipeline.sharedCIContext
     super.init()
     focusPointConversionLayer.session = session
     focusPointConversionLayer.videoGravity = .resizeAspectFill
@@ -345,8 +362,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         self.applyDefaultAutoFocusAndExposure(to: device)
         _ = self.applyZoomFactorOnSessionQueue(1.0, emitUpdate: true)
       }
+      self.refreshLocationCaptureState()
       DispatchQueue.main.async {
-        self.updateLocationCaptureState()
         completion(.success(()))
       }
     }
@@ -357,8 +374,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       if self.session.isRunning {
         self.session.stopRunning()
       }
+      self.stopLocationUpdates()
       DispatchQueue.main.async {
-        self.locationManager.stopUpdatingLocation()
         completion(.success(()))
       }
     }
@@ -379,19 +396,29 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       self.onHistogramUpdated = nil
       self.onZoomUpdated = nil
     }
+    stopLocationUpdates()
     DispatchQueue.main.async {
-      self.locationManager.stopUpdatingLocation()
       self.previewImageView.image = nil
     }
   }
 
   func setSimulation(id: String, intensity: Double) {
-    let safeId = LumaFilmSimulation.supportedSimulationIds.contains(id)
+    let safeId =
+      LumaFilmSimulation.supportedSimulationIds.contains(id)
       ? id
       : LumaFilmSimulation.defaultSimulationId
+    let simulation = filmSimulationManager.simulation(for: safeId)
+    let clampedIntensity = max(0.0, min(1.0, intensity))
+
+    previewStateLock.lock()
+    _previewSimulation = simulation
+    _previewSimulationIntensity = clampedIntensity
+    previewStateLock.unlock()
+
     stateQueue.sync {
       _simulationId = safeId
-      _simulationIntensity = max(0.0, min(1.0, intensity))
+      _currentSimulation = simulation
+      _simulationIntensity = clampedIntensity
     }
   }
 
@@ -460,6 +487,9 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     completion: @escaping (Result<Double, Error>) -> Void
   ) {
     let clamped = min(max(strength, 0.0), 1.0)
+    previewStateLock.lock()
+    _previewLookStrength = clamped
+    previewStateLock.unlock()
     stateQueue.sync {
       _lookStrength = clamped
     }
@@ -555,8 +585,11 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         let activeDevice = try self.reconcileCaptureDeviceOnSessionQueue(
           preferredCaptureFormat: requested
         )
-        if requested == .proRaw {
+        switch requested {
+        case .raw, .proRaw, .rawPlusHeic, .rawPlusJpg:
           _ = self.applyZoomFactorOnSessionQueue(1.0, emitUpdate: false)
+        case .heic, .jpg:
+          break
         }
         _ = self.refreshPhotoConfigurationOnSessionQueue(device: activeDevice)
         self.emitZoomUpdate()
@@ -855,9 +888,13 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     isRenderingFrame = true
     autoreleasepool {
-      let simulationState = stateQueue.sync {
-        (_simulationId, _simulationIntensity, _lookStrength)
-      }
+      previewStateLock.lock()
+      let simulationState = (
+        _previewSimulation,
+        _previewSimulationIntensity,
+        _previewLookStrength
+      )
+      previewStateLock.unlock()
       let image = CIImage(cvPixelBuffer: pixelBuffer)
       let previewProcessingState = stateQueue.sync { () -> (Bool, LumaPreviewProcessingMode) in
         let processingMode = updatePreviewProcessingModeOnStateQueue()
@@ -871,7 +908,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       // 3. preview output (no still-only polish)
       let processedImage = previewProcessor.processPreviewFrame(
         image,
-        simulationId: simulationState.0,
+        simulation: simulationState.0,
         simulationIntensity: simulationState.1,
         lookStrength: simulationState.2,
         applyEnhancement: previewProcessingState.0,
@@ -907,6 +944,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     let bracketSettings = photo.bracketSettings
     let captureState = stateQueue.sync { () -> CaptureSnapshot in
       (
+        simulation: _currentSimulation,
         simulationId: _simulationId,
         simulationIntensity: _simulationIntensity,
         lookStrength: _lookStrength,
@@ -1098,7 +1136,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       "height": orientedImage.map { Int($0.extent.height.rounded()) } as Any,
       "captureFormat": captureState.captureFormat.rawValue,
       "capturedAt": capturedAtMs,
-      "savedAtMs": capturedAtMs
+      "savedAtMs": capturedAtMs,
     ]
     finishCapture(
       .success(
@@ -1141,22 +1179,33 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     }
 
     let processedMetadata = rawPlusProcessedProcessedMetadata ?? [:]
+    let captureISO = currentCaptureISOOnSessionQueue()
+    let shouldDenoise = (captureISO ?? 0) >= 100
     resetRawPlusProcessedBuffers()
     resetFrameCollectionState()
     restoreExposureAfterCaptureIfNeeded()
-    completeRawPlusProcessedCapture(
-      rawData: rawData,
-      processedData: processedData,
-      processedMetadata: processedMetadata,
-      captureState: captureState
-    )
-  }
 
+    captureProcessingQueue.async { [weak self] in
+      guard let self else { return }
+      autoreleasepool {
+        self.completeRawPlusProcessedCapture(
+          rawData: rawData,
+          processedData: processedData,
+          processedMetadata: processedMetadata,
+          captureState: captureState,
+          captureISO: captureISO,
+          shouldDenoise: shouldDenoise
+        )
+      }
+    }
+  }
   private func completeRawPlusProcessedCapture(
     rawData: Data,
     processedData: Data,
     processedMetadata: [AnyHashable: Any],
-    captureState: CaptureSnapshot
+    captureState: CaptureSnapshot,
+    captureISO: Float?,
+    shouldDenoise: Bool
   ) {
     let captureOrientation = ciImageOrientation(
       for: captureState.videoOrientation,
@@ -1173,22 +1222,18 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     }
 
     let orientedProcessed = processedCIImage.oriented(captureOrientation)
-    let sourceMetadata = processedMetadata.isEmpty
+    let sourceMetadata =
+      processedMetadata.isEmpty
       ? normalizedMetadata(from: processedData)
       : normalizedMetadataFromDictionary(processedMetadata)
 
-    // Final still processing:
-    // 1. neutral base preparation
-    // 2. creative look transform
-    // 3. still-only polish
-    let captureISO = currentCaptureISOOnSessionQueue()
     let finalProcessed = stillRenderPipeline.render(
       orientedProcessed,
-      simulationId: captureState.simulationId,
+      simulation: captureState.simulation,
       simulationIntensity: captureState.simulationIntensity,
       lookStrength: captureState.lookStrength,
       allowEnhancement: true,
-      shouldDenoise: shouldApplyStillNoiseReductionOnSessionQueue(),
+      shouldDenoise: shouldDenoise,
       captureISO: captureISO
     )
 
@@ -1231,7 +1276,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       "height": Int(finalProcessed.extent.height.rounded()),
       "captureFormat": captureState.captureFormat.rawValue,
       "capturedAt": capturedAtMs,
-      "savedAtMs": capturedAtMs
+      "savedAtMs": capturedAtMs,
     ]
     finishCapture(
       .success(
@@ -1243,9 +1288,6 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       )
     )
   }
-
-  // MARK: - Processed Still Pipeline
-
   private func processCompressedCaptureFrame(
     photoData: Data?,
     photoMetadata: [AnyHashable: Any],
@@ -1279,9 +1321,9 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     if bracketSourceMetadata == nil {
       bracketSourceMetadata = normalizedMetadata(from: photoData)
     }
-    let frameBias = exposureBiasValue(from: bracketSettings) ??
-      exposureBiasValue(from: photoMetadata) ??
-      fallbackBracketBias(forFrameIndex: bracketReceivedFrameCount)
+    let frameBias =
+      exposureBiasValue(from: bracketSettings) ?? exposureBiasValue(from: photoMetadata)
+      ?? fallbackBracketBias(forFrameIndex: bracketReceivedFrameCount)
     bracketFrames.append(BracketFrame(image: orientedImage, exposureBias: frameBias))
     bracketReceivedFrameCount += 1
 
@@ -1289,38 +1331,47 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       return
     }
 
-    let fallbackImage =
-      preferredBracketFallbackFrame(from: bracketFrames)?.image ?? orientedImage
-    let mergedImage =
-      isBracketCaptureActive ? (mergeBracketedFrames(bracketFrames) ?? fallbackImage) : fallbackImage
+    let collectedFrames = bracketFrames
+    let shouldMergeBracketFrames = isBracketCaptureActive
+    let fallbackImage = preferredBracketFallbackFrame(from: collectedFrames)?.image ?? orientedImage
     let sourceMetadata = bracketSourceMetadata ?? normalizedMetadata(from: photoData)
+    let captureISO = currentCaptureISOOnSessionQueue()
+    let shouldDenoise = (captureISO ?? 0) >= 100
 
     resetFrameCollectionState()
     restoreExposureAfterCaptureIfNeeded()
-    completeProcessedCompressedCapture(
-      mergedImage,
-      sourceMetadata: sourceMetadata,
-      captureState: captureState
-    )
-  }
 
+    captureProcessingQueue.async { [weak self] in
+      guard let self else { return }
+      autoreleasepool {
+        let mergedImage =
+          shouldMergeBracketFrames
+          ? (self.mergeBracketedFrames(collectedFrames) ?? fallbackImage)
+          : fallbackImage
+        self.completeProcessedCompressedCapture(
+          mergedImage,
+          sourceMetadata: sourceMetadata,
+          captureState: captureState,
+          captureISO: captureISO,
+          shouldDenoise: shouldDenoise
+        )
+      }
+    }
+  }
   private func completeProcessedCompressedCapture(
     _ orientedImage: CIImage,
     sourceMetadata: [String: Any],
-    captureState: CaptureSnapshot
+    captureState: CaptureSnapshot,
+    captureISO: Float?,
+    shouldDenoise: Bool
   ) {
-    // Final still processing:
-    // 1. neutral base preparation
-    // 2. creative look transform
-    // 3. still-only polish
-    let captureISO = currentCaptureISOOnSessionQueue()
     let finalImage = stillRenderPipeline.render(
       orientedImage,
-      simulationId: captureState.simulationId,
+      simulation: captureState.simulation,
       simulationIntensity: captureState.simulationIntensity,
       lookStrength: captureState.lookStrength,
       allowEnhancement: true,
-      shouldDenoise: shouldApplyStillNoiseReductionOnSessionQueue(),
+      shouldDenoise: shouldDenoise,
       captureISO: captureISO
     )
 
@@ -1357,7 +1408,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       "height": Int(finalImage.extent.height.rounded()),
       "captureFormat": captureState.captureFormat.rawValue,
       "capturedAt": capturedAtMs,
-      "savedAtMs": capturedAtMs
+      "savedAtMs": capturedAtMs,
     ]
     finishCapture(
       .success(
@@ -1369,12 +1420,13 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       )
     )
   }
-
   private func exposureBiasValue(from metadata: [AnyHashable: Any]) -> Float? {
-    guard let exif = metadata[kCGImagePropertyExifDictionary as String] as? [AnyHashable: Any] else {
+    guard let exif = metadata[kCGImagePropertyExifDictionary as String] as? [AnyHashable: Any]
+    else {
       return nil
     }
-    if let value = (exif[kCGImagePropertyExifExposureBiasValue as String] as? NSNumber)?.floatValue {
+    if let value = (exif[kCGImagePropertyExifExposureBiasValue as String] as? NSNumber)?.floatValue
+    {
       return value
     }
     if let value = (exif["ExposureBiasValue"] as? NSNumber)?.floatValue {
@@ -1404,8 +1456,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
   private func preferredBracketFallbackFrame(from frames: [BracketFrame]) -> BracketFrame? {
     guard !frames.isEmpty else { return nil }
-    return frames.min(by: { abs($0.exposureBias) < abs($1.exposureBias) }) ??
-      frames[frames.count / 2]
+    return frames.min(by: { abs($0.exposureBias) < abs($1.exposureBias) })
+      ?? frames[frames.count / 2]
   }
 
   private func mergeBracketedFrames(_ frames: [BracketFrame]) -> CIImage? {
@@ -1426,7 +1478,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     ).cropped(to: middleImage.extent)
 
     let luminanceMask = makeLuminanceMask(from: middleImage)
-    let softenedLuminanceMask = luminanceMask
+    let softenedLuminanceMask =
+      luminanceMask
       .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 7.0])
       .cropped(to: middleImage.extent)
 
@@ -1437,11 +1490,12 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         "inputPoint1": CIVector(x: 0.52, y: 0.0),
         "inputPoint2": CIVector(x: 0.72, y: 0.16),
         "inputPoint3": CIVector(x: 0.88, y: 0.92),
-        "inputPoint4": CIVector(x: 1, y: 1)
+        "inputPoint4": CIVector(x: 1, y: 1),
       ]
     ).cropped(to: middleImage.extent)
 
-    let shadowMask = softenedLuminanceMask
+    let shadowMask =
+      softenedLuminanceMask
       .applyingFilter("CIColorInvert")
       .applyingFilter(
         "CIToneCurve",
@@ -1450,7 +1504,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
           "inputPoint1": CIVector(x: 0.18, y: 0.88),
           "inputPoint2": CIVector(x: 0.42, y: 0.24),
           "inputPoint3": CIVector(x: 0.74, y: 0),
-          "inputPoint4": CIVector(x: 1, y: 0)
+          "inputPoint4": CIVector(x: 1, y: 0),
         ]
       )
       .cropped(to: middleImage.extent)
@@ -1465,7 +1519,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       "CIHighlightShadowAdjust",
       parameters: [
         "inputShadowAmount": 0.14,
-        "inputHighlightAmount": 0.18
+        "inputHighlightAmount": 0.18,
       ]
     ).cropped(to: middleImage.extent)
     let restoredContrast = compressedHighlights.applyingFilter(
@@ -1473,7 +1527,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       parameters: [
         kCIInputContrastKey: 1.035,
         kCIInputSaturationKey: 1.0,
-        kCIInputBrightnessKey: 0.0
+        kCIInputBrightnessKey: 0.0,
       ]
     ).cropped(to: middleImage.extent)
     let naturalBlend = blendImageWithOpacity(
@@ -1488,7 +1542,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         "inputPoint1": CIVector(x: 0.2, y: 0.18),
         "inputPoint2": CIVector(x: 0.5, y: 0.5),
         "inputPoint3": CIVector(x: 0.82, y: 0.85),
-        "inputPoint4": CIVector(x: 1, y: 1)
+        "inputPoint4": CIVector(x: 1, y: 1),
       ]
     ).cropped(to: middleImage.extent)
   }
@@ -1500,8 +1554,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     let sorted = frames.sorted { $0.exposureBias < $1.exposureBias }
     guard let dark = sorted.first, let bright = sorted.last else { return nil }
     let middle =
-      sorted.min(by: { abs($0.exposureBias) < abs($1.exposureBias) }) ??
-      sorted[sorted.count / 2]
+      sorted.min(by: { abs($0.exposureBias) < abs($1.exposureBias) }) ?? sorted[sorted.count / 2]
     return (dark: dark, middle: middle, bright: bright)
   }
 
@@ -1510,7 +1563,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       "CIColorControls",
       parameters: [
         kCIInputSaturationKey: 0.0,
-        kCIInputContrastKey: 1.0
+        kCIInputContrastKey: 1.0,
       ]
     ).cropped(to: image.extent)
   }
@@ -1524,7 +1577,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       "CIBlendWithMask",
       parameters: [
         kCIInputBackgroundImageKey: background,
-        kCIInputMaskImageKey: mask
+        kCIInputMaskImageKey: mask,
       ]
     ).cropped(to: background.extent)
   }
@@ -1542,7 +1595,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         "inputGVector": CIVector(x: 0, y: 1, z: 0, w: 0),
         "inputBVector": CIVector(x: 0, y: 0, z: 1, w: 0),
         "inputAVector": CIVector(x: 0, y: 0, z: 0, w: clampedOpacity),
-        "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 0)
+        "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 0),
       ]
     )
     return alphaScaled.applyingFilter(
@@ -1558,6 +1611,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     previewView.clipsToBounds = true
     previewView.isUserInteractionEnabled = true
     previewView.onLayout = { [weak self] in
+      self?.cachePreviewGeometry()
       self?.updateVideoOrientation()
     }
 
@@ -1597,6 +1651,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
         return
       }
+
+      self.prepareImageProcessingResources()
 
       var didBeginConfiguration = false
       do {
@@ -1648,6 +1704,15 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
       }
     }
+  }
+
+  private func prepareImageProcessingResources() {
+    guard !hasPreparedImageProcessingResources else { return }
+    filmSimulationManager.preloadSimulations()
+    lutLoader.preloadAllDescriptors()
+    previewProcessor.prepareResources()
+    stillRenderPipeline.prepareResources()
+    hasPreparedImageProcessingResources = true
   }
 
   /// Capture-session configuration defaults.
@@ -1714,7 +1779,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   private func configurePreviewPipeline() throws {
     videoOutput.alwaysDiscardsLateVideoFrames = true
     videoOutput.videoSettings = [
-      kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+      kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
     ]
     videoOutput.setSampleBufferDelegate(self, queue: previewQueue)
 
@@ -1748,7 +1813,10 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       position: .back
     )
 
-    if mode == .wide, let preferredWideDevice = preferredWideDevice(from: discovery.devices, ranking: preferredTypes) {
+    if mode == .wide,
+      let preferredWideDevice = preferredWideDevice(
+        from: discovery.devices, ranking: preferredTypes)
+    {
       return preferredWideDevice
     }
 
@@ -1772,8 +1840,11 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     for captureFormat: CameraControllerCaptureFormat,
     preferredResolution: CameraPhotoResolutionOption?
   ) -> Bool {
-    if captureFormat.hasRawCompanion {
+    switch captureFormat {
+    case .raw, .proRaw, .rawPlusHeic, .rawPlusJpg:
       return true
+    case .heic, .jpg:
+      break
     }
     guard let preferredResolution else {
       return false
@@ -1837,8 +1908,11 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     stateQueue.sync {
       _lensMode = lensMode
     }
-    if captureFormat == .proRaw {
+    switch captureFormat {
+    case .raw, .proRaw, .rawPlusHeic, .rawPlusJpg:
       _ = applyZoomFactorOnSessionQueue(1.0, emitUpdate: false)
+    case .heic, .jpg:
+      break
     }
     return videoInput?.device
   }
@@ -1883,19 +1957,11 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     let requestedFormat = stateQueue.sync { _captureFormat }
     var activeFormat: CameraControllerCaptureFormat = .heic
     var configuredSettings: AVCapturePhotoSettings?
-    var usingBayerRAW = false
-
-    func configureRawType(_ rawType: OSType) {
-      if #available(iOS 14.3, *) {
-        usingBayerRAW = AVCapturePhotoOutput.isBayerRAWPixelFormat(rawType)
-      }
-    }
 
     func makeRawSettings(
       rawType: OSType,
       processedCodec: AVVideoCodecType? = nil
     ) -> AVCapturePhotoSettings {
-      configureRawType(rawType)
       if let processedCodec {
         return AVCapturePhotoSettings(
           rawPixelFormatType: rawType,
@@ -1941,11 +2007,17 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         activeFormat = .raw
       }
     case .proRaw:
-      let preferredRawType = preferredRawPhotoPixelFormatTypeOnSessionQueue(
-        for: .proRaw
-      )
-      if let rawType = preferredRawType {
-        configuredSettings = makeRawSettings(rawType: rawType)
+      if let rawType = appleProRAWPhotoPixelFormatTypeOnSessionQueue()
+        ?? preferredRawPhotoPixelFormatTypeOnSessionQueue(for: .proRaw)
+      {
+        let processedCodec: AVVideoCodecType? =
+          photoOutput.availablePhotoCodecTypes.contains(.hevc)
+          ? .hevc
+          : (photoOutput.availablePhotoCodecTypes.contains(.jpeg) ? .jpeg : nil)
+        configuredSettings = makeRawSettings(
+          rawType: rawType,
+          processedCodec: processedCodec
+        )
         activeFormat = .proRaw
       }
     case .jpg:
@@ -1985,7 +2057,17 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     var settings = configuredSettings ?? AVCapturePhotoSettings()
     if #available(iOS 16.0, *) {
-      let preferredDimensions = stateQueue.sync { _selectedPhotoResolution?.dimensions }
+      let preferredDimensions: CMVideoDimensions?
+      switch activeFormat {
+      case .proRaw:
+        preferredDimensions = maximumSupportedPhotoDimensionsOnSessionQueue(
+          device: videoInput?.device
+        )
+      case .raw, .rawPlusHeic, .rawPlusJpg:
+        preferredDimensions = stateQueue.sync { _selectedPhotoResolution?.dimensions }
+      case .heic, .jpg:
+        preferredDimensions = stateQueue.sync { _selectedPhotoResolution?.dimensions }
+      }
       let maxDimensions = preferredDimensions ?? photoOutput.maxPhotoDimensions
       if maxDimensions.width > 0, maxDimensions.height > 0 {
         settings.maxPhotoDimensions = maxDimensions
@@ -2004,15 +2086,15 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         AVVideoCodecKey: AVVideoCodecType.jpeg
       ]
     }
-    settings.isHighResolutionPhotoEnabled = activeFormat.isProcessedCapture
+    settings.isHighResolutionPhotoEnabled = true
     if #available(iOS 13.0, *) {
-      settings.photoQualityPrioritization = usingBayerRAW ? .speed : .quality
+      settings.photoQualityPrioritization = .quality
     }
     if photoOutput.isStillImageStabilizationSupported {
-      settings.isAutoStillImageStabilizationEnabled = !usingBayerRAW
+      settings.isAutoStillImageStabilizationEnabled = activeFormat == .heic || activeFormat == .jpg
     }
     if photoOutput.isVirtualDeviceFusionSupported {
-      settings.isAutoVirtualDeviceFusionEnabled = !usingBayerRAW
+      settings.isAutoVirtualDeviceFusionEnabled = activeFormat == .heic || activeFormat == .jpg
     }
     if photoOutput.isDepthDataDeliverySupported {
       settings.isDepthDataDeliveryEnabled = false
@@ -2135,7 +2217,19 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     videoInput?.device.iso
   }
 
-  private func updateLocationCaptureState() {
+  private func refreshLocationCaptureState() {
+    locationQueue.async { [weak self] in
+      self?.updateLocationCaptureStateOnLocationQueue()
+    }
+  }
+
+  private func stopLocationUpdates() {
+    locationQueue.async { [weak self] in
+      self?.locationManager.stopUpdatingLocation()
+    }
+  }
+
+  private func updateLocationCaptureStateOnLocationQueue() {
     guard CLLocationManager.locationServicesEnabled() else {
       locationManager.stopUpdatingLocation()
       return
@@ -2154,7 +2248,9 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     case .notDetermined:
       guard !hasRequestedLocationAuthorization else { return }
       hasRequestedLocationAuthorization = true
-      locationManager.requestWhenInUseAuthorization()
+      DispatchQueue.main.async { [weak self] in
+        self?.locationManager.requestWhenInUseAuthorization()
+      }
     default:
       locationManager.stopUpdatingLocation()
     }
@@ -2167,20 +2263,22 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   ) -> [String: Any] {
     var output = payload
 
-    let exif = metadataDictionary(
-      metadata[kCGImagePropertyExifDictionary as String]
-    ) ?? [:]
-    let tiff = metadataDictionary(
-      metadata[kCGImagePropertyTIFFDictionary as String]
-    ) ?? [:]
-    let gps = metadataDictionary(
-      metadata[kCGImagePropertyGPSDictionary as String]
-    ) ?? [:]
+    let exif =
+      metadataDictionary(
+        metadata[kCGImagePropertyExifDictionary as String]
+      ) ?? [:]
+    let tiff =
+      metadataDictionary(
+        metadata[kCGImagePropertyTIFFDictionary as String]
+      ) ?? [:]
+    let gps =
+      metadataDictionary(
+        metadata[kCGImagePropertyGPSDictionary as String]
+      ) ?? [:]
     let device = videoInput?.device
 
     let isoValue =
-      metadataISO(from: exif) ??
-      currentCaptureISOOnSessionQueue().map(Double.init)
+      metadataISO(from: exif) ?? currentCaptureISOOnSessionQueue().map(Double.init)
     if let isoValue {
       output["iso"] = isoValue
     }
@@ -2192,8 +2290,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
           kCGImagePropertyExifExposureTime as String,
           "ExposureTime",
         ]
-      ) ??
-      currentExposureDurationOnSessionQueue()
+      ) ?? currentExposureDurationOnSessionQueue()
     if let exposureSeconds,
       let shutterSpeed = formattedShutterSpeed(seconds: exposureSeconds)
     {
@@ -2207,8 +2304,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
           kCGImagePropertyExifFNumber as String,
           "FNumber",
         ]
-      ) ??
-      device.map { Double($0.lensAperture) }
+      ) ?? device.map { Double($0.lensAperture) }
     if let aperture {
       output["aperture"] = aperture
     }
@@ -2231,15 +2327,13 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
           kCGImagePropertyExifLensModel as String,
           "LensModel",
         ]
-      ) ??
-      metadataString(
+      ) ?? metadataString(
         from: tiff,
         keys: [
           kCGImagePropertyTIFFModel as String,
           "Model",
         ]
-      ) ??
-      fallbackLensLabel(for: captureState.lensMode)
+      ) ?? fallbackLensLabel(for: captureState.lensMode)
     if !lens.isEmpty {
       output["lens"] = lens
     }
@@ -2306,7 +2400,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     if let iso = metadataDouble(
       from: exif,
       keys: [
-        "PhotographicSensitivity",
+        "PhotographicSensitivity"
       ]
     ) {
       return iso
@@ -2447,14 +2541,14 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   }
 
   func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-    updateLocationCaptureState()
+    refreshLocationCaptureState()
   }
 
   func locationManager(
     _ manager: CLLocationManager,
     didChangeAuthorization status: CLAuthorizationStatus
   ) {
-    updateLocationCaptureState()
+    refreshLocationCaptureState()
   }
 
   func locationManager(
@@ -2492,7 +2586,17 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
   @objc
   private func handleDeviceOrientationDidChange() {
+    cachePreviewGeometry()
     updateVideoOrientation()
+  }
+
+  private func cachePreviewGeometry() {
+    let bounds = previewView.bounds
+    let interfaceOrientation = previewView.window?.windowScene?.interfaceOrientation ?? .portrait
+    previewGeometryLock.lock()
+    _cachedPreviewBounds = bounds
+    _cachedInterfaceOrientation = interfaceOrientation
+    previewGeometryLock.unlock()
   }
 
   @objc
@@ -2519,7 +2623,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         )
       } catch {
         #if DEBUG
-        print("⚠️ CameraViewController: tap focus failed: \(error.localizedDescription)")
+          print("⚠️ CameraViewController: tap focus failed: \(error.localizedDescription)")
         #endif
       }
     }
@@ -2548,7 +2652,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         )
       } catch {
         #if DEBUG
-        print("⚠️ CameraViewController: focus lock failed: \(error.localizedDescription)")
+          print("⚠️ CameraViewController: focus lock failed: \(error.localizedDescription)")
         #endif
       }
     }
@@ -2570,11 +2674,15 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   private func currentPreferredVideoOrientation() -> AVCaptureVideoOrientation {
     let interfaceOrientation: UIInterfaceOrientation
     if Thread.isMainThread {
-      interfaceOrientation = previewView.window?.windowScene?.interfaceOrientation ?? .portrait
+      let current = previewView.window?.windowScene?.interfaceOrientation ?? .portrait
+      previewGeometryLock.lock()
+      _cachedInterfaceOrientation = current
+      previewGeometryLock.unlock()
+      interfaceOrientation = current
     } else {
-      interfaceOrientation = DispatchQueue.main.sync {
-        previewView.window?.windowScene?.interfaceOrientation ?? .portrait
-      }
+      previewGeometryLock.lock()
+      interfaceOrientation = _cachedInterfaceOrientation
+      previewGeometryLock.unlock()
     }
     if let orientation = videoOrientation(for: interfaceOrientation) {
       return orientation
@@ -2582,7 +2690,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     return .portrait
   }
 
-  private func videoOrientation(for orientation: UIDeviceOrientation) -> AVCaptureVideoOrientation? {
+  private func videoOrientation(for orientation: UIDeviceOrientation) -> AVCaptureVideoOrientation?
+  {
     switch orientation {
     case .portrait:
       return .portrait
@@ -2597,7 +2706,9 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     }
   }
 
-  private func videoOrientation(for orientation: UIInterfaceOrientation) -> AVCaptureVideoOrientation? {
+  private func videoOrientation(for orientation: UIInterfaceOrientation)
+    -> AVCaptureVideoOrientation?
+  {
     switch orientation {
     case .portrait:
       return .portrait
@@ -2629,17 +2740,17 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
   private func applyVideoOrientation(_ orientation: AVCaptureVideoOrientation) {
     if let videoConnection = videoOutput.connection(with: .video),
-       videoConnection.isVideoOrientationSupported
+      videoConnection.isVideoOrientationSupported
     {
       videoConnection.videoOrientation = orientation
     }
     if let photoConnection = photoOutput.connection(with: .video),
-       photoConnection.isVideoOrientationSupported
+      photoConnection.isVideoOrientationSupported
     {
       photoConnection.videoOrientation = orientation
     }
     if let previewConnection = focusPointConversionLayer.connection,
-       previewConnection.isVideoOrientationSupported
+      previewConnection.isVideoOrientationSupported
     {
       previewConnection.videoOrientation = orientation
       if previewConnection.isVideoMirroringSupported {
@@ -2651,16 +2762,21 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
   private func currentPreviewBounds() -> CGRect {
     if Thread.isMainThread {
-      return previewView.bounds
+      let bounds = previewView.bounds
+      previewGeometryLock.lock()
+      _cachedPreviewBounds = bounds
+      previewGeometryLock.unlock()
+      return bounds
     }
-    return DispatchQueue.main.sync {
-      previewView.bounds
-    }
+    previewGeometryLock.lock()
+    let bounds = _cachedPreviewBounds
+    previewGeometryLock.unlock()
+    return bounds
   }
 
   private func currentVideoOrientationForFocus() -> AVCaptureVideoOrientation {
     if let outputConnection = videoOutput.connection(with: .video),
-       outputConnection.isVideoOrientationSupported
+      outputConnection.isVideoOrientationSupported
     {
       return outputConnection.videoOrientation
     }
@@ -2713,7 +2829,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       }
     } catch {
       #if DEBUG
-      print("⚠️ CameraViewController: zoom update failed: \(error.localizedDescription)")
+        print("⚠️ CameraViewController: zoom update failed: \(error.localizedDescription)")
       #endif
       return nil
     }
@@ -2824,7 +2940,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       _availablePhotoResolutions = availableResolutions
       _selectedPhotoResolution = selectedResolution
       _captureFormat = activeFormat
-      _megapixels = selectedResolution?.megapixels
+      _megapixels =
+        selectedResolution?.megapixels
         ?? megapixels(from: currentMaxPhotoDimensions(device: activeDevice))
     }
     return selectedResolution
@@ -2929,7 +3046,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       device.activeFormat = preferredFormat
     } catch {
       #if DEBUG
-      print("⚠️ CameraViewController: photo format selection failed: \(error.localizedDescription)")
+        print(
+          "⚠️ CameraViewController: photo format selection failed: \(error.localizedDescription)")
       #endif
     }
   }
@@ -2991,14 +3109,14 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   ) -> OSType? {
     switch captureFormat {
     case .proRaw:
-      return appleProRAWPhotoPixelFormatTypeOnSessionQueue() ??
-        standardRawPhotoPixelFormatTypeOnSessionQueue()
+      return appleProRAWPhotoPixelFormatTypeOnSessionQueue()
+        ?? standardRawPhotoPixelFormatTypeOnSessionQueue()
     case .raw, .rawPlusHeic, .rawPlusJpg:
-      return standardRawPhotoPixelFormatTypeOnSessionQueue() ??
-        appleProRAWPhotoPixelFormatTypeOnSessionQueue()
+      return standardRawPhotoPixelFormatTypeOnSessionQueue()
+        ?? appleProRAWPhotoPixelFormatTypeOnSessionQueue()
     case .heic, .jpg:
-      return standardRawPhotoPixelFormatTypeOnSessionQueue() ??
-        appleProRAWPhotoPixelFormatTypeOnSessionQueue()
+      return standardRawPhotoPixelFormatTypeOnSessionQueue()
+        ?? appleProRAWPhotoPixelFormatTypeOnSessionQueue()
     }
   }
 
@@ -3233,6 +3351,14 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     captureFormat: CameraControllerCaptureFormat
   ) -> CameraPhotoResolutionOption? {
     guard !availableResolutions.isEmpty else { return nil }
+    switch captureFormat {
+    case .proRaw:
+      return availableResolutions.max(by: { $0.megapixels < $1.megapixels })
+    case .raw, .rawPlusHeic, .rawPlusJpg:
+      return availableResolutions.min(by: { $0.megapixels < $1.megapixels })
+    case .heic, .jpg:
+      break
+    }
     if let preferred,
       availableResolutions.contains(preferred)
     {
@@ -3246,15 +3372,30 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     {
       return currentOutputResolution
     }
-    switch captureFormat {
-    case .proRaw:
-      return availableResolutions.max(by: { $0.megapixels < $1.megapixels })
-    case .raw, .rawPlusHeic, .rawPlusJpg:
-      return availableResolutions.min(by: { $0.megapixels < $1.megapixels })
-    case .heic, .jpg:
-      return availableResolutions.max(by: { $0.megapixels < $1.megapixels }) ??
-        availableResolutions.first
+    return availableResolutions.max(by: { $0.megapixels < $1.megapixels })
+      ?? availableResolutions.first
+  }
+
+  private func maximumSupportedPhotoDimensionsOnSessionQueue(
+    device: AVCaptureDevice?
+  ) -> CMVideoDimensions? {
+    guard let device else {
+      return nil
     }
+    if #available(iOS 16.0, *) {
+      let supported = device.activeFormat.supportedMaxPhotoDimensions
+      if let maxDimensions = supported.max(by: { megapixels(from: $0) < megapixels(from: $1) }),
+        maxDimensions.width > 0,
+        maxDimensions.height > 0
+      {
+        return maxDimensions
+      }
+    }
+    let fallback = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+    guard fallback.width > 0, fallback.height > 0 else {
+      return nil
+    }
+    return fallback
   }
 
   private func currentMaxPhotoDimensions(device: AVCaptureDevice?) -> CMVideoDimensions {
@@ -3396,7 +3537,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       }
     } catch {
       #if DEBUG
-      print("⚠️ CameraViewController: default AF/AE setup failed: \(error.localizedDescription)")
+        print("⚠️ CameraViewController: default AF/AE setup failed: \(error.localizedDescription)")
       #endif
     }
   }
@@ -3411,7 +3552,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       device.activeColorSpace = .P3_D65
     } catch {
       #if DEBUG
-      print("⚠️ CameraViewController: color space setup failed: \(error.localizedDescription)")
+        print("⚠️ CameraViewController: color space setup failed: \(error.localizedDescription)")
       #endif
     }
   }
@@ -3449,7 +3590,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         _didTemporarilyLockExposureForCapture = false
       }
       #if DEBUG
-      print("⚠️ CameraViewController: pre-capture exposure lock failed: \(error.localizedDescription)")
+        print(
+          "⚠️ CameraViewController: pre-capture exposure lock failed: \(error.localizedDescription)")
       #endif
     }
   }
@@ -3472,7 +3614,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       }
     } catch {
       #if DEBUG
-      print("⚠️ CameraViewController: exposure restore failed: \(error.localizedDescription)")
+        print("⚠️ CameraViewController: exposure restore failed: \(error.localizedDescription)")
       #endif
     }
   }
@@ -3579,7 +3721,9 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         try fileManager.removeItem(at: url)
       } catch {
         #if DEBUG
-        print("⚠️ CameraViewController: temp cleanup failed for \(url.lastPathComponent): \(error.localizedDescription)")
+          print(
+            "⚠️ CameraViewController: temp cleanup failed for \(url.lastPathComponent): \(error.localizedDescription)"
+          )
         #endif
       }
     }
@@ -3637,31 +3781,33 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     let scale = min(1.0, histogramDownsampleWidth / extent.width)
     let downsampled: CIImage
-    if scale < 0.999 {
-      let filter = CIFilter(name: "CILanczosScaleTransform")
-      filter?.setValue(image, forKey: kCIInputImageKey)
-      filter?.setValue(scale, forKey: kCIInputScaleKey)
-      filter?.setValue(1.0, forKey: kCIInputAspectRatioKey)
-      downsampled = filter?.outputImage ?? image.transformed(
-        by: CGAffineTransform(scaleX: scale, y: scale)
-      )
+    if scale < 0.999,
+      let histogramScaleFilter
+    {
+      histogramScaleFilter.setValue(image, forKey: kCIInputImageKey)
+      histogramScaleFilter.setValue(scale, forKey: kCIInputScaleKey)
+      histogramScaleFilter.setValue(1.0, forKey: kCIInputAspectRatioKey)
+      downsampled =
+        histogramScaleFilter.outputImage
+        ?? image.transformed(
+          by: CGAffineTransform(scaleX: scale, y: scale)
+        )
     } else {
       downsampled = image
     }
 
-    guard let histogramFilter = CIFilter(name: "CIAreaHistogram") else {
+    guard let histogramAreaFilter else {
       return nil
     }
-    histogramFilter.setValue(downsampled, forKey: kCIInputImageKey)
-    histogramFilter.setValue(
+    histogramAreaFilter.setValue(downsampled, forKey: kCIInputImageKey)
+    histogramAreaFilter.setValue(
       CIVector(cgRect: downsampled.extent),
       forKey: kCIInputExtentKey
     )
-    histogramFilter.setValue(histogramBinCount, forKey: "inputCount")
-    histogramFilter.setValue(1.0, forKey: "inputScale")
+    histogramAreaFilter.setValue(histogramBinCount, forKey: "inputCount")
+    histogramAreaFilter.setValue(1.0, forKey: "inputScale")
 
-    guard let histogramImage = histogramFilter.outputImage else { return nil }
-
+    guard let histogramImage = histogramAreaFilter.outputImage else { return nil }
     var bitmap = [Float](repeating: 0, count: histogramBinCount * 4)
     ciContext.render(
       histogramImage,
@@ -3831,8 +3977,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         previewProcessingMode = .reduced
       }
     case .reduced:
-      if fps > previewFpsRecoveryThreshold &&
-        histogramComputeEMA < (previewHistogramCostThreshold * 0.75)
+      if fps > previewFpsRecoveryThreshold
+        && histogramComputeEMA < (previewHistogramCostThreshold * 0.75)
       {
         previewProcessingMode = .standard
       }
@@ -3850,8 +3996,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         let delta = abs(targetBias - self.autoExposureProtectionBias)
         guard delta >= 0.03 else { return false }
         guard
-          (now - self.lastHighlightProtectionAdjustmentTime) >=
-            self.highlightProtectionMinimumUpdateInterval
+          (now - self.lastHighlightProtectionAdjustmentTime)
+            >= self.highlightProtectionMinimumUpdateInterval
         else {
           return false
         }
