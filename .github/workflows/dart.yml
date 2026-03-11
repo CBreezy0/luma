@@ -1,4 +1,4 @@
-name: Flutter CI (Linux)
+name: build
 
 on:
   push:
