@@ -25,6 +25,8 @@ Build number: `3`
 
 ## Bug Fixes
 
+- Fixed a release-only iOS startup hang where the app stayed on the native splash screen before the first Flutter frame.
+- Root cause: an eager `Isar.initializeIsarCore(download: false)` call ran before `runApp()`, and release dead-code stripping removed the IsarCore FFI symbols that call expected to find.
 - Fixed a capture-state race where a newly selected film profile or look strength could lag behind the live preview during capture.
 - Removed stale workspace/config artifacts from the tracked repository state.
 - Cleaned release metadata so Xcode now resolves version `2.0.0` and build `3` from Flutter build settings.
@@ -34,6 +36,7 @@ Build number: `3`
 
 Please focus testing on the following areas:
 
+- Cold-launch the app repeatedly from TestFlight / Release and confirm the splash transitions into the camera shell every time.
 - Start the camera repeatedly and confirm the live preview appears reliably.
 - Switch film profiles quickly while framing a scene and confirm the saved photo matches the previewed look.
 - Capture in HEIC, JPEG, RAW, RAW+HEIC, RAW+JPEG, and ProRAW on supported devices.
@@ -45,7 +48,7 @@ Please focus testing on the following areas:
 
 ## Notes for TestFlight Testers
 
-This beta introduces the new custom camera engine, real-time film simulations, and major image-processing improvements. Please report:
+This beta introduces the new custom camera engine, real-time film simulations, major image-processing improvements, and a release-startup fix for TestFlight cold launches. Please report:
 
 - preview freezes or black frames
 - look switching mismatches between preview and saved photo

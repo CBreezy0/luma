@@ -15,6 +15,12 @@ Luma v2 Beta centers on a rebuilt camera and image-processing stack:
 - improved Luma gallery storage, metadata persistence, and thumbnail recovery
 - native editor rendering bridge with full-resolution export and sharing flows
 
+### iOS startup reliability
+
+The iOS/TestFlight splash-screen hang was traced to an eager `Isar.initializeIsarCore(download: false)` call that ran before `runApp()`. In release builds, dead-code stripping removed most IsarCore FFI symbols, so that call threw before Flutter rendered its first frame and the native splash never advanced.
+
+The fix keeps app launch free of database work before `runApp()` and updates the iOS release linker settings to force-load and retain the IsarCore archive symbols required by `DynamicLibrary.process()`. That keeps cold-start behavior consistent across Debug, Release, and TestFlight while preserving the gallery's Isar-backed metadata layer.
+
 ## Architecture
 
 Luma is split between a Flutter feature layer and a native iOS imaging layer.
@@ -125,6 +131,8 @@ Luma v2 Beta includes several production-readiness improvements:
 - safer filter lifecycle management in the film render path
 - improved preview throttling and histogram scheduling under load
 - stronger state synchronization between look selection and capture execution
+- removed pre-`runApp()` IsarCore initialization from the launch path so the first Flutter frame is never blocked by database setup
+- iOS release builds now force-load and retain IsarCore symbols so TestFlight cold starts match local debug behavior
 - camera provider startup timeouts to prevent hanging UI initialization
 - cleaner CI workflow naming and consistent Flutter SDK pinning in GitHub Actions
 

@@ -1,18 +1,45 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:isar/isar.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import 'features/camera/camera_page.dart';
-// ignore: unused_import
-import 'package:isar_flutter_libs/isar_flutter_libs.dart';
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+void main() {
+  runZonedGuarded(
+    () {
+      WidgetsFlutterBinding.ensureInitialized();
 
-  await Isar.initializeIsarCore(download: false);
+      FlutterError.onError = (details) {
+        FlutterError.presentError(details);
+      };
 
-  runApp(const ProviderScope(child: LumaApp()));
+      PlatformDispatcher.instance.onError = (error, stackTrace) {
+        FlutterError.presentError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'luma',
+            context: ErrorDescription('while dispatching a platform error'),
+          ),
+        );
+        return true;
+      };
+
+      runApp(const ProviderScope(child: LumaApp()));
+    },
+    (error, stackTrace) {
+      FlutterError.presentError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'luma',
+          context: ErrorDescription('while starting the application'),
+        ),
+      );
+    },
+  );
 }
 
 class LumaApp extends StatelessWidget {
