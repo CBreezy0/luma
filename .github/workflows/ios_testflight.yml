@@ -66,6 +66,12 @@ jobs:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY: ${{ secrets.ASC_KEY_P8 }}
+          TESTFLIGHT_DISTRIBUTE_EXTERNAL: "true"
+          TESTFLIGHT_NOTIFY_EXTERNAL_TESTERS: "false"
+          TESTFLIGHT_GROUPS: ${{ secrets.TESTFLIGHT_EXTERNAL_GROUPS }}
+          TESTFLIGHT_CHANGELOG: >-
+            Fixed release/TestFlight splash hang on iOS. Improved startup stability.
+            Please verify cold launch to camera, gallery loading, and capture/save flow.
         run: |
           set -euo pipefail
           cd ios

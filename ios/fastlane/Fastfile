@@ -3,18 +3,40 @@ default_platform(:ios)
 platform :ios do
   desc "Build IPA and upload to TestFlight"
   lane :beta do
-    # Make sure pods are installed (safe to run repeatedly)
+    distribute_external = ENV.fetch("TESTFLIGHT_DISTRIBUTE_EXTERNAL", "false") == "true"
+    notify_external_testers = ENV.fetch("TESTFLIGHT_NOTIFY_EXTERNAL_TESTERS", "false") == "true"
+    groups = ENV.fetch("TESTFLIGHT_GROUPS", "")
+      .split(",")
+      .map(&:strip)
+      .reject(&:empty?)
+    changelog = ENV["TESTFLIGHT_CHANGELOG"]
+
     cocoapods(clean_install: true)
 
-    # Build a signed IPA using the workspace/scheme
     build_app(
       workspace: "Runner.xcworkspace",
       scheme: "Runner",
-      export_method: "app-store" # for TestFlight/App Store uploads
+      export_method: "app-store",
+      export_options: {
+        method: "app-store-connect",
+        manageAppVersionAndBuildNumber: false,
+        signingStyle: "automatic",
+        stripSwiftSymbols: true,
+        teamID: ENV["APPLE_TEAM_ID"],
+        uploadSymbols: true,
+        testFlightInternalTestingOnly: false
+      }
     )
 
-    upload_to_testflight(
-      skip_waiting_for_build_processing: true
-    )
+    upload_options = {
+      skip_waiting_for_build_processing: false,
+      distribute_external: distribute_external,
+      changelog: changelog
+    }
+
+    upload_options[:notify_external_testers] = notify_external_testers if distribute_external
+    upload_options[:groups] = groups unless groups.empty?
+
+    upload_to_testflight(**upload_options)
   end
 end

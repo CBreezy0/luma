@@ -2,7 +2,7 @@
 
 Release tag: `v2.0.0-beta`
 App version: `2.0.0`
-Build number: `3`
+Build number: `4`
 
 ## New Features
 
