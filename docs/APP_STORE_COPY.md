@@ -4,18 +4,17 @@
 Luma
 
 ## Short Tagline
-Quiet, premium photo editing.
+Deliberate photography with a custom camera, film looks, and a private library.
 
 ## Description
-Luma is a minimalist photo editor built for focus and taste.
-Edit with a calm, cinematic workspace that keeps your image first.
-Apply signature preset packs curated for modern film and clean color.
-Tune light, color, and detail with responsive, low‑latency tools.
-Crop with precise controls and a grid for clean composition.
-Export high‑quality results directly to Photos.
+Luma is an iOS-first camera, gallery, and editing workflow built for thoughtful image making.
+Capture with a custom AVFoundation camera tuned for real-time film previews and flexible format support.
+Switch between signature looks while framing, then save processed images, RAW companions, or ProRAW on supported hardware.
+Review captures in Luma's internal library with metadata, favorites, ratings, and thumbnail recovery.
+Finish edits with a non-destructive editor and export full-resolution results through the native renderer.
 
 ## Keywords
-photo editor, presets, film, retouch, crop, color, light, camera, portrait, landscape, aesthetic, filters
+camera, photo editor, film simulation, proraw, raw, gallery, metadata, presets, cinematic, color, capture, photography
 
 ## Privacy Note
 We do not collect personal data in the beta.

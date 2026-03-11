@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.0.0-beta
+- Rebuilt the native AVFoundation camera and preview pipeline around the custom iOS camera stack.
+- Added the Core Image film simulation system with real-time look switching and shared render behavior between preview and still capture.
+- Expanded capture support for HEIC, JPEG, RAW, RAW+HEIC, RAW+JPEG, and Apple ProRAW with 48MP targeting on supported hardware.
+- Added the internal Luma library with Isar-backed metadata, thumbnail generation/recovery, favorites, ratings, and richer gallery viewing.
+- Added the native editor/export bridge for full-resolution rendering and sharing.
+- Fixed the release-only iOS startup splash hang by moving Isar work off the pre-`runApp()` path and retaining IsarCore symbols in release builds.
+- Cleaned repo automation by removing duplicate CI, making distribution workflows manual-only, and refreshing repo documentation.
+
 ## v1.0.1 (Beta)
 - Editor: compact adjustment picker with Quick list and “All tools” panel.
 - Presets: category → list → active flow with intensity slider, cancel/done actions, and expanded preset catalog.

@@ -2,12 +2,16 @@
 
 ## Supported Devices
 - iPhone only
+- A physical device is required for camera validation
+- ProRAW and 48MP workflows require supported hardware
 
-## Known Issues
-- Some 3rd-party iOS plugins emit deprecation warnings on build (StoreKit/iOS 18).
-- Splash sizing may need tuning on very small devices if the wordmark feels too large.
+## Current Focus Areas
+- cold launch reliability in iOS Release / TestFlight-style builds
+- camera preview stability after launch, resume, and look switching
+- capture/save consistency across processed, RAW, and ProRAW formats
+- library metadata correctness, thumbnail recovery, and editor handoff
 
-## Feedback Focus
-- Preset quality and naming (do they feel premium?)
-- UI feel and navigation smoothness (gallery → editor, tabs, sliders)
-- Export reliability and output quality
+## Known Limitations
+- The iOS simulator cannot validate live camera capture paths.
+- Hardware-dependent formats and resolutions vary by device and active session format.
+- Signed distribution still requires Apple certificates, provisioning assets, and App Store Connect credentials outside normal repo validation.
