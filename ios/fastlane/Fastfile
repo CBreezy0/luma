@@ -3,6 +3,7 @@ default_platform(:ios)
 platform :ios do
   desc "Build an App Store archive and upload it to TestFlight (manual use only)"
   lane :beta do
+    # This lane is intentionally guarded for manual distribution only.
     unless ENV.fetch("CONFIRM_TESTFLIGHT_UPLOAD", "false") == "true"
       UI.user_error!(
         "Refusing to upload. Set CONFIRM_TESTFLIGHT_UPLOAD=true for an intentional TestFlight run."

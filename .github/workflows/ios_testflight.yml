@@ -1,5 +1,5 @@
 # Manual-only distribution workflow.
-# This workflow never runs on normal pushes or tags.
+# This workflow never runs on normal pushes or tags and must be confirmed explicitly.
 name: iOS TestFlight Upload (manual only)
 
 on:

@@ -5,12 +5,16 @@
 .svn/
 .atom/
 
-# IDEs
+# IDEs / editor state
 .idea/
 .vscode/
 *.iml
 *.ipr
 *.iws
+**/xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.moved-aside
 
 # Dart / Flutter / Pub
 .dart_tool/
@@ -30,7 +34,7 @@ ios/Flutter/ephemeral/
 ios/Flutter/Generated.xcconfig
 ios/Flutter/flutter_export_environment.sh
 
-# Xcode / SwiftPM
+# Xcode / SwiftPM / Apple build outputs
 .build/
 .buildlog/
 .swiftpm/
@@ -38,6 +42,11 @@ DerivedData/
 migrate_working_dir/
 *.xcarchive
 *.ipa
+*.xcresult
+*.dSYM/
+*.dSYM.zip
+*.crash
+*.trace
 app.*.symbols
 app.*.map.json
 
@@ -49,13 +58,29 @@ app.*.map.json
 # Ruby / Fastlane
 .bundle/
 vendor/bundle/
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
 ios/fastlane/report.xml
 ios/fastlane/Preview.html
 ios/fastlane/screenshots/
 
-# Signing / provisioning
+# Secrets / signing / local environment
+.env
+.env.*
+!.env.example
+!.env.sample
+.envrc
+*.local
 *.cer
+*.crt
+*.csr
+*.der
+*.key
+*.pem
+*.p8
 *.mobileprovision
+*.provisionprofile
 *.p12
 *.keychain-db
 
