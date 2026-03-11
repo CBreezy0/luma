@@ -14,8 +14,8 @@ permissions:
   contents: read
 
 jobs:
-  validate:
-    name: Format, analyze, and test
+  build:
+    name: build
     runs-on: ubuntu-latest
 
     steps:
