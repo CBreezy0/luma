@@ -60,9 +60,9 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     if (_initialized || _isDisposed) return;
     state = state.copyWith(isInitializing: true, errorMessage: null);
     try {
-      final init = await _bridge
-          .initializeCamera()
-          .timeout(_cameraInitializeTimeout);
+      final init = await _bridge.initializeCamera().timeout(
+        _cameraInitializeTimeout,
+      );
       if (_isDisposed || !mounted) return;
       _initialized = true;
       state = state.copyWith(

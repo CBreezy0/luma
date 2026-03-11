@@ -1,13 +1,21 @@
-name: Flutter Analyze & Test
+name: Flutter CI (Linux)
 
 on:
   push:
-    branches: ["main"]
+    branches: [main]
   pull_request:
-    branches: ["main"]
+    branches: [main]
+
+concurrency:
+  group: flutter-ci-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  validate:
+    name: Format, analyze, and test
     runs-on: ubuntu-latest
 
     steps:
@@ -17,15 +25,15 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.41.4"
+          flutter-version: '3.41.4'
           channel: stable
           cache: true
 
-      - name: Flutter version
-        run: flutter --version
-
       - name: Install dependencies
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
+
+      - name: Check formatting
+        run: dart format --set-exit-if-changed lib test
 
       - name: Analyze project source
         run: flutter analyze

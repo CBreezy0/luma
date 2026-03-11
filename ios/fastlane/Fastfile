@@ -1,8 +1,14 @@
 default_platform(:ios)
 
 platform :ios do
-  desc "Build IPA and upload to TestFlight"
+  desc "Build an App Store archive and upload it to TestFlight (manual use only)"
   lane :beta do
+    unless ENV.fetch("CONFIRM_TESTFLIGHT_UPLOAD", "false") == "true"
+      UI.user_error!(
+        "Refusing to upload. Set CONFIRM_TESTFLIGHT_UPLOAD=true for an intentional TestFlight run."
+      )
+    end
+
     distribute_external = ENV.fetch("TESTFLIGHT_DISTRIBUTE_EXTERNAL", "false") == "true"
     notify_external_testers = ENV.fetch("TESTFLIGHT_NOTIFY_EXTERNAL_TESTERS", "false") == "true"
     groups = ENV.fetch("TESTFLIGHT_GROUPS", "")

@@ -1,23 +1,43 @@
-name: iOS TestFlight
+# Manual-only distribution workflow.
+# This workflow never runs on normal pushes or tags.
+name: iOS TestFlight Upload (manual only)
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+    inputs:
+      confirm_distribution:
+        description: 'Set to true to allow App Store Connect/TestFlight upload steps.'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-testflight-upload-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   ios:
     runs-on: macos-latest
 
     steps:
+      - name: Abort unless distribution is explicitly confirmed
+        run: |
+          if [ "${{ inputs.confirm_distribution }}" != "true" ]; then
+            echo "This workflow is manual-only. Re-run it with confirm_distribution enabled." >&2
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.41.4"
+          flutter-version: '3.41.4'
+          channel: stable
           cache: true
 
       - name: Install dependencies (lockfile enforced)
@@ -28,7 +48,7 @@ jobs:
           cd ios
           pod install
 
-      # ----- Signing setup (manual) -----
+      # Manual signing setup. Requires repo/environment secrets.
       - name: Install signing certificate and provisioning profile
         env:
           P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
@@ -56,25 +76,22 @@ jobs:
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/"
 
-      # ----- Build + Upload via Fastlane -----
-      - name: Build & upload to TestFlight (Fastlane)
+      - name: Build and upload via Fastlane
         env:
           APP_IDENTIFIER: ${{ secrets.APP_IDENTIFIER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
-          # App Store Connect API key (recommended)
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY: ${{ secrets.ASC_KEY_P8 }}
-          TESTFLIGHT_DISTRIBUTE_EXTERNAL: "true"
-          TESTFLIGHT_NOTIFY_EXTERNAL_TESTERS: "false"
+          TESTFLIGHT_DISTRIBUTE_EXTERNAL: 'true'
+          TESTFLIGHT_NOTIFY_EXTERNAL_TESTERS: 'false'
           TESTFLIGHT_GROUPS: ${{ secrets.TESTFLIGHT_EXTERNAL_GROUPS }}
           TESTFLIGHT_CHANGELOG: >-
             Fixed release/TestFlight splash hang on iOS. Improved startup stability.
             Please verify cold launch to camera, gallery loading, and capture/save flow.
+          CONFIRM_TESTFLIGHT_UPLOAD: 'true'
         run: |
           set -euo pipefail
           cd ios
           bundle install
-          # Fastlane will auto-use the ASC API key env vars if present
           bundle exec fastlane ios beta

@@ -1,40 +1,41 @@
-name: Flutter Validate (macOS)
+name: Flutter iOS Validation (macOS)
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+concurrency:
+  group: flutter-ios-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-    name: Analyze, Test, Build
+  ios-validation:
+    name: CocoaPods and iOS release build (unsigned)
     runs-on: macos-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Flutter
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.41.4"
+          flutter-version: '3.41.4'
           channel: stable
+          cache: true
 
       - name: Install dependencies
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
-      - name: Check formatting
-        run: dart format --set-exit-if-changed .
+      - name: Install iOS pods
+        run: |
+          cd ios
+          pod install
 
-      - name: Analyze
-        run: flutter analyze
-
-      - name: Run tests
-        run: flutter test
-
-      - name: Install CocoaPods
-        run: sudo gem install cocoapods
-
-      - name: Build iOS
-        run: flutter build ios --simulator --no-codesign
+      - name: Build iOS app (release, unsigned)
+        run: flutter build ios --release --no-codesign
