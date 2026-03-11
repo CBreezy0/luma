@@ -1,16 +1,6 @@
 import CoreImage
 import Foundation
 
-enum LumaColorPipeline {
-  static let workingColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
-  static let sharedCIContext: CIContext = CIContext(options: [
-    .useSoftwareRenderer: false,
-    .cacheIntermediates: false,
-    .workingColorSpace: workingColorSpace,
-    .outputColorSpace: workingColorSpace,
-  ])
-}
-
 struct LumaLUTCubeDescriptor {
   let dimension: Int
   let cubeData: Data
@@ -38,7 +28,7 @@ final class LumaLUTLoader {
   }
 
   private let cubeDimension = 32
-  private let colorSpace = LumaColorPipeline.workingColorSpace
+  private let colorSpace = LumaCIContext.workingColorSpace
   private static let lock = NSLock()
   private static var cubeDataCache: [String: LumaLUTCubeDescriptor] = [:]
 

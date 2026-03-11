@@ -1,170 +1,140 @@
 # Luma
 
-Luma is a modern iOS photo camera and editor built with Flutter for product UI and native Swift for capture and rendering. The project combines a custom AVFoundation camera stack, an internal photo library, and a non-destructive editor in a single app workflow.
+Luma is an iOS-first camera and photo workflow app built with Flutter for product UI and native Swift for capture, preview rendering, and high-resolution image processing. The app combines a custom AVFoundation camera, an internal library, and a non-destructive editor in one pipeline.
 
-## Project Overview
+## Luma v2 Beta
 
-Luma is designed around a photographer-first flow:
+Luma v2 Beta centers on a rebuilt camera and image-processing stack:
 
-1. Capture photos in a custom in-app camera.
-2. Keep originals and processed files inside the Luma library.
-3. Review work in a fast gallery and viewer.
-4. Apply non-destructive edits through a native rendering bridge.
-
-The app is Flutter-driven at the feature layer, while performance-sensitive imaging work stays in native Swift.
-
-## Luma v2
-
-Luma v2 highlights the current beta direction:
-
-- computational photography pipeline
-- HDR multi-frame capture
-- RAW workflows
-- film simulation improvements
-- tone-mapped preview pipeline
-- Isar powered gallery
-- background thumbnail generation
-
-## Camera System
-
-The camera system is implemented with AVFoundation and exposed to Flutter through a native plugin.
-
-Current camera features include:
-
-- Native AVFoundation capture session with a custom preview surface.
-- Processed capture formats for HEIC and JPEG.
-- RAW workflows, including single-frame RAW capture and Apple ProRAW support when available.
-- Multi-frame HDR capture with bracketed stills and luminance-weighted merging.
-- Frame alignment for HDR merge on still capture.
-- Film simulation pipeline with LUT-backed looks and adjustable look strength.
-- Processed preview pipeline with light tone mapping and film rendering.
-- Live histogram stream derived from preview frames.
-- Exposure bias controls, tap-to-focus, AE/AF lock, and manual focus support when hardware allows.
-- Pinch zoom plus quick zoom levels such as `0.5x`, `1x`, `3x`, and `5x`.
-- Processed still enhancements such as ISO-aware noise reduction and subtle sharpening.
-
-Key native camera files:
-
-- `ios/Runner/LumaCameraPlugin.swift`
-- `ios/Runner/CameraViewController.swift`
-- `ios/Runner/LumaPreviewProcessor.swift`
-- `ios/Runner/LumaFilmSimulation.swift`
-- `ios/Runner/LumaLUTLoader.swift`
-- `ios/Runner/LumaFrameAligner.swift`
-
-## Library System
-
-Luma maintains its own internal library rather than mirroring the entire system photo roll.
-
-The library system provides:
-
-- An internal `LumaLibrary` storage layout for originals, edited outputs, RAW companions, JPEG/HEIC files, and thumbnails.
-- Metadata persistence using Isar-backed records.
-- Thumbnail generation and recovery for fast gallery browsing.
-- Explicit imports into the Luma library instead of automatic camera-roll ingestion.
-- Gallery filters, selection actions, and viewer metadata surfaces.
-
-Primary library files live under:
-
-- `lib/features/library/`
-- `lib/features/camera/luma_gallery_page.dart`
-
-## Editor Pipeline
-
-The editor uses a non-destructive model. Originals are preserved, while edit instructions and versions are stored as metadata and replayed through a native renderer.
-
-Current editor pipeline includes:
-
-- Non-destructive edit versions.
-- A preset-based adjustment system.
-- Native preview rendering and full-resolution export through a Flutter method channel.
-- Export and sharing flows built on top of the native renderer and iOS share/photos APIs.
-
-Key files:
-
-- `lib/features/editor/`
-- `lib/features/export/`
-- `ios/Runner/NativeRenderer.swift`
+- custom AVFoundation camera implementation with native preview rendering
+- Core Image film simulation pipeline with real-time look switching
+- shared `CIContext` reuse across preview, capture, and editor rendering
+- safer per-render `CIFilter` construction to avoid cross-thread filter reuse issues
+- multi-frame processed capture and HDR-style bracket merging
+- Apple ProRAW support and 48MP ProRAW target selection on supported hardware
+- improved Luma gallery storage, metadata persistence, and thumbnail recovery
+- native editor rendering bridge with full-resolution export and sharing flows
 
 ## Architecture
 
-Luma uses a layered Flutter + Swift architecture.
+Luma is split between a Flutter feature layer and a native iOS imaging layer.
 
-Flutter is responsible for:
+### Flutter feature modules
 
-- Camera UI and state management.
-- Gallery, library, and viewer flows.
-- Editor controls, presets, and adjustment state.
-- Method-channel and event-channel integration.
+- `lib/features/camera/` drives camera UI, Riverpod state, method-channel integration, histogram display, and gallery entry points.
+- `lib/features/library/` owns the internal Luma library, Isar-backed metadata, thumbnail generation, and viewer flows.
+- `lib/features/editor/` provides the non-destructive editing experience and bridges to the native renderer.
+- `lib/features/export/` handles export and share flows built on top of the native render pipeline.
 
-Native Swift is responsible for:
+### Native iOS modules
 
-- AVFoundation capture and preview processing.
-- HDR frame collection, alignment, and merge.
-- Film simulation and still-image rendering.
-- Export rendering and iOS-native sharing/photos save flows.
+- `ios/Runner/LumaCameraPlugin.swift` exposes the native camera surface and controls to Flutter.
+- `ios/Runner/CameraViewController.swift` owns AVFoundation session configuration, device controls, preview rendering, capture orchestration, RAW / ProRAW handling, metadata enrichment, and bracket capture.
+- `ios/Runner/LumaPreviewProcessor.swift` runs the live preview path.
+- `ios/Runner/LumaFilmSimulation.swift` contains look metadata plus the shared film render pipeline for preview and processed stills.
+- `ios/Runner/LumaLUTLoader.swift` generates and caches LUT cube data.
+- `ios/Runner/LumaFrameAligner.swift` supports multi-frame alignment for processed capture.
+- `ios/Runner/NativeRenderer.swift` powers editor preview rendering and export.
+- `ios/Runner/LumaCIContext.swift` centralizes the working color space and shared `CIContext`.
 
-The main bridge points are:
+## Camera Pipeline Architecture
 
-- `luma/camera`
-- `luma/camera_histogram`
-- `luma/camera_zoom`
-- `luma/native_renderer`
-- `luma/native_share`
+The camera pipeline is built around a native AVFoundation session with Flutter controlling state through method and event channels.
 
-## Development Setup
+1. `CameraViewController` configures the capture session, video output, photo output, focus/exposure controls, zoom, and capture format availability.
+2. Preview frames arrive through `AVCaptureVideoDataOutput` and are processed by `LumaPreviewProcessor`.
+3. The preview processor applies a neutral base, film look transform, adaptive preview throttling, and optional histogram generation before updating the preview surface.
+4. Still capture reuses the same look definitions through `LumaFilmRenderPipeline`, which keeps the preview and saved-image look behavior aligned.
+5. Processed still capture can use multi-frame exposure bracketing and frame alignment before final rendering and metadata packaging.
 
-### Requirements
+### Preview reliability and performance
 
-- Flutter SDK
-- Xcode
-- CocoaPods
+The current pipeline emphasizes responsiveness under sustained camera load:
 
-### Bootstrap
+- preview and still rendering share a reusable `CIContext`
+- LUT descriptors are cached once and reused
+- preview rendering adapts between standard and reduced modes based on observed frame cost
+- histogram computation is throttled independently from preview rendering
+- capture state now updates synchronously when switching looks or look strength, so saved results stay aligned with the live preview
+- `CIFilter` instances in the film pipeline are created per render pass, avoiding thread-safety issues from reusing mutable filter instances across queues
 
-```bash
-flutter pub get
-cd ios && pod install && cd ..
-flutter run
-```
+## Film Simulation System
 
-### Verification
+Film looks are defined in `ios/Runner/LumaFilmSimulation.swift` as normalized look profiles containing LUT selection, tone-curve data, color biases, grain, and still-polish parameters.
 
-```bash
-dart format .
-flutter analyze
-flutter test
-```
+Supported built-in looks:
 
-### iOS Simulator Build
+- `original`
+- `slate`
+- `ember`
+- `bloom`
+- `drift`
+- `vale`
+- `mono`
 
-```bash
-xcodebuild -workspace ios/Runner.xcworkspace \
-  -scheme Runner \
-  -sdk iphonesimulator \
-  -configuration Debug \
-  CODE_SIGNING_ALLOWED=NO build
-```
+Each look can be blended with adjustable intensity and look strength. Preview rendering omits still-only polish such as grain and sharpening, while processed stills apply final sharpening and optional grain with ISO-aware scaling.
 
-## CI/CD
+## Supported Capture Formats
 
-Luma uses both GitHub Actions and Xcode Cloud.
+Luma currently exposes the following capture modes through the native camera controller:
 
-### GitHub Actions
+- HEIC
+- JPEG
+- RAW
+- Apple ProRAW
+- RAW + HEIC
+- RAW + JPEG
 
-GitHub Actions covers Flutter and iOS validation, including:
+Resolution handling is format-aware:
 
-- dependency setup
-- formatting checks
+- processed HEIC / JPEG capture prefers 12MP and 24MP targets when available
+- RAW and RAW+processed capture stay on the standard RAW path
+- ProRAW targets the highest available sensor resolution and prefers 48MP on supported devices
+
+## Gallery and Library System
+
+Luma maintains its own internal library instead of mirroring the full system photo roll.
+
+The library system provides:
+
+- internal storage for originals, processed outputs, RAW companions, and thumbnails
+- Isar-backed metadata records for capture details, ratings, favorites, and edits
+- background thumbnail generation and thumbnail recovery
+- gallery filters, sorting, and viewer metadata surfaces
+- explicit save/import flows rather than implicit system-roll ingestion
+
+Primary files for this layer live in `lib/features/library/` and `lib/features/camera/luma_gallery_page.dart`.
+
+## RAW and Editor Workflows
+
+The editor is non-destructive. Originals remain intact while edit settings are stored as metadata and replayed through `NativeRenderer`.
+
+Current editor workflow highlights:
+
+- full-resolution export through the native Core Image renderer
+- crop, rotation, straighten, preset blending, and parameter-based adjustments
+- native JPEG export and iOS sharing integration
+- preservation of capture metadata inside the Luma library record
+- RAW companion awareness in the library and capture pipeline
+
+## Performance Improvements
+
+Luma v2 Beta includes several production-readiness improvements:
+
+- shared `CIContext` reuse instead of ad hoc context creation
+- safer filter lifecycle management in the film render path
+- improved preview throttling and histogram scheduling under load
+- stronger state synchronization between look selection and capture execution
+- camera provider startup timeouts to prevent hanging UI initialization
+- cleaner CI workflow naming and consistent Flutter SDK pinning in GitHub Actions
+
+## Development Validation
+
+Recommended validation commands:
+
 - `flutter analyze`
 - `flutter test`
-- iOS simulator builds
+- `flutter build ios --release --no-codesign`
+- `xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release -showBuildSettings`
 
-### Xcode Cloud
-
-Xcode Cloud support is configured through the repository CI scripts under:
-
-- `ci_scripts/`
-- `ios/ci_scripts/`
-
-Those scripts prepare Flutter, generate iOS Flutter config, and install CocoaPods before cloud builds.
+For signed App Store / TestFlight delivery, a valid Apple Distribution certificate and matching provisioning assets are still required on the build machine.

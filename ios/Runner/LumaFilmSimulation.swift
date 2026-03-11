@@ -376,22 +376,6 @@ final class LumaFilmRenderPipeline {
   private let mode: LumaFilmRenderMode
   private let lutLoader: LumaLUTLoader
 
-  // Reused filters. Each pipeline instance is used on a single processing queue.
-  private let noiseReductionFilter = CIFilter(name: "CINoiseReduction")
-  private let highlightShadowFilter = CIFilter(name: "CIHighlightShadowAdjust")
-  private let colorControlsFilter = CIFilter(name: "CIColorControls")
-  private let vibranceFilter = CIFilter(name: "CIVibrance")
-  private let temperatureFilter = CIFilter(name: "CITemperatureAndTint")
-  private let toneCurveFilter = CIFilter(name: "CIToneCurve")
-  private let unsharpMaskFilter = CIFilter(name: "CIUnsharpMask")
-  private let blendAlphaFilter = CIFilter(name: "CIColorMatrix")
-  private let sourceOverFilter = CIFilter(name: "CISourceOverCompositing")
-  private let randomGeneratorFilter = CIFilter(name: "CIRandomGenerator")
-  private let grainMonochromeFilter = CIFilter(name: "CIColorControls")
-  private let grainColorMatrixFilter = CIFilter(name: "CIColorMatrix")
-  private let grainBlendFilter = CIFilter(name: "CIAdditionCompositing")
-  private var lutFilters: [String: CIFilter] = [:]
-
   init(mode: LumaFilmRenderMode, lutLoader: LumaLUTLoader = .shared) {
     self.mode = mode
     self.lutLoader = lutLoader
@@ -400,7 +384,7 @@ final class LumaFilmRenderPipeline {
   func prepareResources() {
     for simulation in LumaFilmSimulationManager.shared.allSimulations() {
       guard let presetName = simulation.profile.lutPresetName else { continue }
-      _ = lutFilter(for: presetName)
+      _ = lutLoader.cubeDescriptor(named: presetName)
     }
   }
 
@@ -472,7 +456,7 @@ final class LumaFilmRenderPipeline {
     var output = image
 
     if config.noiseReductionLevel > 0.0001,
-      let noiseReductionFilter
+      let noiseReductionFilter = CIFilter(name: "CINoiseReduction")
     {
       noiseReductionFilter.setValue(output, forKey: kCIInputImageKey)
       noiseReductionFilter.setValue(config.noiseReductionLevel, forKey: "inputNoiseLevel")
@@ -480,14 +464,14 @@ final class LumaFilmRenderPipeline {
       output = noiseReductionFilter.outputImage ?? output
     }
 
-    if let highlightShadowFilter {
+    if let highlightShadowFilter = CIFilter(name: "CIHighlightShadowAdjust") {
       highlightShadowFilter.setValue(output, forKey: kCIInputImageKey)
       highlightShadowFilter.setValue(config.shadowLift, forKey: "inputShadowAmount")
       highlightShadowFilter.setValue(config.highlightCompression, forKey: "inputHighlightAmount")
       output = highlightShadowFilter.outputImage ?? output
     }
 
-    if let colorControlsFilter {
+    if let colorControlsFilter = CIFilter(name: "CIColorControls") {
       colorControlsFilter.setValue(output, forKey: kCIInputImageKey)
       colorControlsFilter.setValue(config.contrast, forKey: kCIInputContrastKey)
       colorControlsFilter.setValue(config.saturation, forKey: kCIInputSaturationKey)
@@ -532,14 +516,19 @@ final class LumaFilmRenderPipeline {
       )
     }
 
+    let skipsChromaAdjustments = profile.saturationBias <= -0.99
+    let saturation =
+      skipsChromaAdjustments
+      ? 1.0
+      : max(0.0, 1.0 + (profile.saturationBias * intensity))
     output = applyColorControls(
       output,
       contrast: 1.0 + (profile.contrastBias * intensity),
-      saturation: max(0.0, 1.0 + (profile.saturationBias * intensity)),
+      saturation: saturation,
       brightness: 0.0
     )
 
-    if abs(profile.vibranceBias) > 0.0001 {
+    if !skipsChromaAdjustments, abs(profile.vibranceBias) > 0.0001 {
       output = applyVibrance(output, amount: profile.vibranceBias * intensity)
     }
 
@@ -576,7 +565,7 @@ final class LumaFilmRenderPipeline {
       : effectiveProfile.stillSharpenAmount * 0.55
     let sharpenAmount = baseSharpenAmount * sharpenScale(for: captureISO)
     if sharpenAmount > 0.0001,
-      let unsharpMaskFilter
+      let unsharpMaskFilter = CIFilter(name: "CIUnsharpMask")
     {
       unsharpMaskFilter.setValue(output, forKey: kCIInputImageKey)
       unsharpMaskFilter.setValue(1.05, forKey: kCIInputRadiusKey)
@@ -603,7 +592,7 @@ final class LumaFilmRenderPipeline {
     intensity: Double
   ) -> CIImage {
     guard intensity > 0.0001 else { return image }
-    guard let filter = lutFilter(for: presetName) else {
+    guard let filter = makeLUTFilter(for: presetName) else {
       return image
     }
 
@@ -615,31 +604,28 @@ final class LumaFilmRenderPipeline {
     return blendWithBase(base: image, processed: transformed, strength: intensity)
   }
 
-  private func lutFilter(for presetName: String) -> CIFilter? {
-    if let cached = lutFilters[presetName] {
-      return cached
-    }
+  private func makeLUTFilter(for presetName: String) -> CIFilter? {
     guard let cube = lutLoader.cubeDescriptor(named: presetName) else {
       return nil
     }
-    guard let created = CIFilter(name: "CIColorCubeWithColorSpace") else {
+    guard let filter = CIFilter(name: "CIColorCubeWithColorSpace") else {
       return nil
     }
-    created.setValue(cube.dimension, forKey: "inputCubeDimension")
-    created.setValue(cube.cubeData, forKey: "inputCubeData")
-    created.setValue(cube.colorSpace, forKey: "inputColorSpace")
-    lutFilters[presetName] = created
-    return created
+    filter.setValue(cube.dimension, forKey: "inputCubeDimension")
+    filter.setValue(cube.cubeData, forKey: "inputCubeData")
+    filter.setValue(cube.colorSpace, forKey: "inputColorSpace")
+    return filter
   }
   private func applyOptionalGrain(_ image: CIImage, amount: Double) -> CIImage {
+    guard mode == .still else { return image }
     guard amount > 0.0001 else {
       return image
     }
     guard
-      let randomGeneratorFilter,
-      let grainMonochromeFilter,
-      let grainColorMatrixFilter,
-      let grainBlendFilter
+      let randomGeneratorFilter = CIFilter(name: "CIRandomGenerator"),
+      let grainMonochromeFilter = CIFilter(name: "CIColorControls"),
+      let grainColorMatrixFilter = CIFilter(name: "CIColorMatrix"),
+      let grainBlendFilter = CIFilter(name: "CIAdditionCompositing")
     else {
       return image
     }
@@ -681,8 +667,8 @@ final class LumaFilmRenderPipeline {
     let alpha = CGFloat(clamp01(strength))
     guard alpha > 0.0001 else { return base }
     guard
-      let blendAlphaFilter,
-      let sourceOverFilter
+      let blendAlphaFilter = CIFilter(name: "CIColorMatrix"),
+      let sourceOverFilter = CIFilter(name: "CISourceOverCompositing")
     else {
       return processed
     }
@@ -706,7 +692,7 @@ final class LumaFilmRenderPipeline {
     saturation: Double,
     brightness: Double
   ) -> CIImage {
-    guard let colorControlsFilter else { return image }
+    guard let colorControlsFilter = CIFilter(name: "CIColorControls") else { return image }
     colorControlsFilter.setValue(image, forKey: kCIInputImageKey)
     colorControlsFilter.setValue(contrast, forKey: kCIInputContrastKey)
     colorControlsFilter.setValue(saturation, forKey: kCIInputSaturationKey)
@@ -719,7 +705,9 @@ final class LumaFilmRenderPipeline {
     shadows: Double,
     highlights: Double
   ) -> CIImage {
-    guard let highlightShadowFilter else { return image }
+    guard let highlightShadowFilter = CIFilter(name: "CIHighlightShadowAdjust") else {
+      return image
+    }
     highlightShadowFilter.setValue(image, forKey: kCIInputImageKey)
     highlightShadowFilter.setValue(clamp01(shadows), forKey: "inputShadowAmount")
     highlightShadowFilter.setValue(clamp01(highlights), forKey: "inputHighlightAmount")
@@ -727,7 +715,7 @@ final class LumaFilmRenderPipeline {
   }
 
   private func applyVibrance(_ image: CIImage, amount: Double) -> CIImage {
-    guard let vibranceFilter else { return image }
+    guard let vibranceFilter = CIFilter(name: "CIVibrance") else { return image }
     vibranceFilter.setValue(image, forKey: kCIInputImageKey)
     vibranceFilter.setValue(amount, forKey: "inputAmount")
     return vibranceFilter.outputImage ?? image
@@ -738,7 +726,7 @@ final class LumaFilmRenderPipeline {
     warmth: Double,
     tint: Double
   ) -> CIImage {
-    guard let temperatureFilter else { return image }
+    guard let temperatureFilter = CIFilter(name: "CITemperatureAndTint") else { return image }
     temperatureFilter.setValue(image, forKey: kCIInputImageKey)
     temperatureFilter.setValue(CIVector(x: 6500, y: 0), forKey: "inputNeutral")
     temperatureFilter.setValue(
@@ -752,7 +740,7 @@ final class LumaFilmRenderPipeline {
   }
 
   private func applyToneCurve(_ image: CIImage, toneCurve: LumaToneCurve) -> CIImage {
-    guard let toneCurveFilter else { return image }
+    guard let toneCurveFilter = CIFilter(name: "CIToneCurve") else { return image }
     toneCurveFilter.setValue(image, forKey: kCIInputImageKey)
     toneCurveFilter.setValue(CIVector(cgPoint: toneCurve.point0), forKey: "inputPoint0")
     toneCurveFilter.setValue(CIVector(cgPoint: toneCurve.point1), forKey: "inputPoint1")

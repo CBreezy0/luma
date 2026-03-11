@@ -51,7 +51,10 @@ app.*.map.json
 .dart_tool/
 .packages
 build/
+ios/Pods/
 ios/Flutter/ephemeral/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
 
 # macOS
 .DS_Store

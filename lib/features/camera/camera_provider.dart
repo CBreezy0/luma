@@ -28,6 +28,9 @@ final capturedPhotosProvider =
     });
 
 class CameraUiController extends StateNotifier<CameraUiState> {
+  static const Duration _cameraInitializeTimeout = Duration(seconds: 8);
+  static const Duration _cameraStartTimeout = Duration(seconds: 8);
+
   final CameraBridge _bridge;
   final List<LumaFilmSimulation> _simulations;
   StreamSubscription<List<double>>? _histogramSubscription;
@@ -57,7 +60,9 @@ class CameraUiController extends StateNotifier<CameraUiState> {
     if (_initialized || _isDisposed) return;
     state = state.copyWith(isInitializing: true, errorMessage: null);
     try {
-      final init = await _bridge.initializeCamera();
+      final init = await _bridge
+          .initializeCamera()
+          .timeout(_cameraInitializeTimeout);
       if (_isDisposed || !mounted) return;
       _initialized = true;
       state = state.copyWith(
@@ -105,7 +110,7 @@ class CameraUiController extends StateNotifier<CameraUiState> {
   Future<void> startCamera() async {
     if (_isDisposed || !_initialized || state.isInitializing) return;
     try {
-      await _bridge.startCamera();
+      await _bridge.startCamera().timeout(_cameraStartTimeout);
       if (_isDisposed || !mounted) return;
       final zoom = await _bridge.setZoomFactor(1.0);
       if (_isDisposed || !mounted) return;

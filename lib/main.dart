@@ -56,21 +56,19 @@ class SplashPage extends StatefulWidget {
 
 class _SplashPageState extends State<SplashPage> {
   Timer? _startupDelay;
+  bool _showCamera = false;
 
   @override
   void initState() {
     super.initState();
-    _startupDelay?.cancel();
-    _startupDelay = Timer(const Duration(seconds: 2), () {
-      if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        PageRouteBuilder(
-          transitionDuration: Duration.zero,
-          reverseTransitionDuration: Duration.zero,
-          pageBuilder: (context, animation, secondaryAnimation) =>
-              const CameraPage(),
-        ),
-      );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startupDelay?.cancel();
+      _startupDelay = Timer(const Duration(seconds: 2), () {
+        if (!mounted) return;
+        setState(() {
+          _showCamera = true;
+        });
+      });
     });
   }
 
@@ -82,6 +80,10 @@ class _SplashPageState extends State<SplashPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_showCamera) {
+      return const CameraPage();
+    }
+
     return const Scaffold(
       backgroundColor: Color(0xFF151515),
       body: Stack(

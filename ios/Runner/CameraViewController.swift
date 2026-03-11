@@ -178,26 +178,27 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
   private let sessionQueue = DispatchQueue(label: "com.luma.camera.session", qos: .userInitiated)
   private let previewQueue = DispatchQueue(label: "luma.preview.processing", qos: .userInitiated)
+  private let renderQueue = DispatchQueue(
+    label: "luma.ci.render",
+    qos: .userInteractive
+  )
   private let captureProcessingQueue = DispatchQueue(
     label: "com.luma.camera.capture-processing",
     qos: .userInitiated
   )
   private let stateQueue = DispatchQueue(label: "com.luma.camera.state")
   private let previewStateLock = NSLock()
+  private let previewMetricsLock = NSLock()
   private let previewGeometryLock = NSLock()
-  private let locationQueue = DispatchQueue(label: "com.luma.camera.location", qos: .utility)
-  private lazy var locationManager: CLLocationManager = {
-    let manager = CLLocationManager()
-    manager.delegate = self
-    manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-    manager.distanceFilter = 25
-    return manager
-  }()
+  private let locationAvailabilityQueue = DispatchQueue(
+    label: "com.luma.camera.location-availability",
+    qos: .utility
+  )
+  private let locationManager: CLLocationManager
 
   private let ciContext: CIContext
   private let filmSimulationManager = LumaFilmSimulationManager.shared
   private let lutLoader = LumaLUTLoader.shared
-  private let workingColorSpace = LumaColorPipeline.workingColorSpace
   private lazy var previewProcessor = LumaPreviewProcessor(
     ciContext: ciContext,
     lutLoader: lutLoader
@@ -307,8 +308,12 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   }()
 
   override init() {
-    ciContext = LumaColorPipeline.sharedCIContext
+    ciContext = LumaCIContext.shared
+    locationManager = CLLocationManager()
     super.init()
+    locationManager.delegate = self
+    locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    locationManager.distanceFilter = 25
     focusPointConversionLayer.session = session
     focusPointConversionLayer.videoGravity = .resizeAspectFill
     configurePreviewView()
@@ -749,6 +754,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   }
 
   func capturePhoto(completion: @escaping (Result<[String: Any], Error>) -> Void) {
+    refreshLocationCaptureState()
     sessionQueue.async {
       guard self.isConfigured else {
         DispatchQueue.main.async {
@@ -879,9 +885,9 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     from _: AVCaptureConnection
   ) {
     let frameTimestamp = CFAbsoluteTimeGetCurrent()
-    stateQueue.sync {
-      updatePreviewFrameInterval(now: frameTimestamp)
-    }
+    previewMetricsLock.lock()
+    updatePreviewFrameInterval(now: frameTimestamp)
+    previewMetricsLock.unlock()
 
     guard !isRenderingFrame else { return }
     guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
@@ -896,24 +902,31 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       )
       previewStateLock.unlock()
       let image = CIImage(cvPixelBuffer: pixelBuffer)
-      let previewProcessingState = stateQueue.sync { () -> (Bool, LumaPreviewProcessingMode) in
-        let processingMode = updatePreviewProcessingModeOnStateQueue()
-        guard previewFrameIntervalEMA > 0 else { return (true, processingMode) }
+      previewMetricsLock.lock()
+      let processingMode = updatePreviewProcessingMode()
+      let shouldEnhance: Bool
+      if previewFrameIntervalEMA > 0 {
         let fps = 1.0 / previewFrameIntervalEMA
-        return (fps >= previewFpsThrottleThreshold, processingMode)
+        shouldEnhance = fps >= previewFpsThrottleThreshold
+      } else {
+        shouldEnhance = true
       }
+      previewMetricsLock.unlock()
+      let previewProcessingState = (shouldEnhance, processingMode)
       // Preview pipeline:
       // 1. neutral preview base
       // 2. creative look transform
       // 3. preview output (no still-only polish)
-      let processedImage = previewProcessor.processPreviewFrame(
-        image,
-        simulation: simulationState.0,
-        simulationIntensity: simulationState.1,
-        lookStrength: simulationState.2,
-        applyEnhancement: previewProcessingState.0,
-        processingMode: previewProcessingState.1
-      )
+      let processedImage = renderQueue.sync {
+        previewProcessor.processPreviewFrame(
+          image,
+          simulation: simulationState.0,
+          simulationIntensity: simulationState.1,
+          lookStrength: simulationState.2,
+          applyEnhancement: previewProcessingState.0,
+          processingMode: previewProcessingState.1
+        )
+      }
 
       // Histogram pipeline (preview-derived bins).
       if previewProcessingState.1.shouldComputeHistogram {
@@ -1127,7 +1140,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       storeLatestThumbnail(from: orientedImage)
     }
     let payload: [String: Any] = [
-      "localIdentifier": nil as String?,
+      "localIdentifier": NSNull(),
       "filePath": tempPath,
       "simulationId": captureState.simulationId,
       "lookStrength": captureState.lookStrength,
@@ -1227,15 +1240,17 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       ? normalizedMetadata(from: processedData)
       : normalizedMetadataFromDictionary(processedMetadata)
 
-    let finalProcessed = stillRenderPipeline.render(
-      orientedProcessed,
-      simulation: captureState.simulation,
-      simulationIntensity: captureState.simulationIntensity,
-      lookStrength: captureState.lookStrength,
-      allowEnhancement: true,
-      shouldDenoise: shouldDenoise,
-      captureISO: captureISO
-    )
+    let finalProcessed = renderQueue.sync {
+      stillRenderPipeline.render(
+        orientedProcessed,
+        simulation: captureState.simulation,
+        simulationIntensity: captureState.simulationIntensity,
+        lookStrength: captureState.lookStrength,
+        allowEnhancement: true,
+        shouldDenoise: shouldDenoise,
+        captureISO: captureISO
+      )
+    }
 
     guard
       let processedCaptureFormat = captureState.captureFormat.processedCaptureFormat,
@@ -1264,8 +1279,8 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     let capturedAtMs = Int(Date().timeIntervalSince1970 * 1000)
 
     let payload: [String: Any] = [
-      "localIdentifier": nil as String?,
-      "rawLocalIdentifier": nil as String?,
+      "localIdentifier": NSNull(),
+      "rawLocalIdentifier": NSNull(),
       "filePath": processedTempPath,
       "rawFilePath": rawTempPath,
       "simulationId": captureState.simulationId,
@@ -1365,15 +1380,17 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     captureISO: Float?,
     shouldDenoise: Bool
   ) {
-    let finalImage = stillRenderPipeline.render(
-      orientedImage,
-      simulation: captureState.simulation,
-      simulationIntensity: captureState.simulationIntensity,
-      lookStrength: captureState.lookStrength,
-      allowEnhancement: true,
-      shouldDenoise: shouldDenoise,
-      captureISO: captureISO
-    )
+    let finalImage = renderQueue.sync {
+      stillRenderPipeline.render(
+        orientedImage,
+        simulation: captureState.simulation,
+        simulationIntensity: captureState.simulationIntensity,
+        lookStrength: captureState.lookStrength,
+        allowEnhancement: true,
+        shouldDenoise: shouldDenoise,
+        captureISO: captureISO
+      )
+    }
 
     guard
       let encoded = encodeCaptureImage(
@@ -1399,7 +1416,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     let capturedAtMs = Int(Date().timeIntervalSince1970 * 1000)
     storeLatestThumbnail(from: finalImage)
     let payload: [String: Any] = [
-      "localIdentifier": nil as String?,
+      "localIdentifier": NSNull(),
       "filePath": tempPath,
       "simulationId": captureState.simulationId,
       "lookStrength": captureState.lookStrength,
@@ -2055,7 +2072,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       }
     }
 
-    var settings = configuredSettings ?? AVCapturePhotoSettings()
+    let settings = configuredSettings ?? AVCapturePhotoSettings()
     if #available(iOS 16.0, *) {
       let preferredDimensions: CMVideoDimensions?
       switch activeFormat {
@@ -2089,9 +2106,6 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     settings.isHighResolutionPhotoEnabled = true
     if #available(iOS 13.0, *) {
       settings.photoQualityPrioritization = .quality
-    }
-    if photoOutput.isStillImageStabilizationSupported {
-      settings.isAutoStillImageStabilizationEnabled = activeFormat == .heic || activeFormat == .jpg
     }
     if photoOutput.isVirtualDeviceFusionSupported {
       settings.isAutoVirtualDeviceFusionEnabled = activeFormat == .heic || activeFormat == .jpg
@@ -2218,19 +2232,26 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
   }
 
   private func refreshLocationCaptureState() {
-    locationQueue.async { [weak self] in
-      self?.updateLocationCaptureStateOnLocationQueue()
+    locationAvailabilityQueue.async { [weak self] in
+      guard let self else { return }
+      let servicesEnabled = CLLocationManager.locationServicesEnabled()
+      DispatchQueue.main.async {
+        self.updateLocationCaptureStateOnMain(locationServicesEnabled: servicesEnabled)
+      }
     }
   }
 
   private func stopLocationUpdates() {
-    locationQueue.async { [weak self] in
+    DispatchQueue.main.async { [weak self] in
       self?.locationManager.stopUpdatingLocation()
+      self?.stateQueue.sync {
+        self?._latestLocation = nil
+      }
     }
   }
 
-  private func updateLocationCaptureStateOnLocationQueue() {
-    guard CLLocationManager.locationServicesEnabled() else {
+  private func updateLocationCaptureStateOnMain(locationServicesEnabled: Bool) {
+    guard locationServicesEnabled else {
       locationManager.stopUpdatingLocation()
       return
     }
@@ -2245,14 +2266,18 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     switch status {
     case .authorizedAlways, .authorizedWhenInUse:
       locationManager.startUpdatingLocation()
+      if #available(iOS 9.0, *) {
+        locationManager.requestLocation()
+      }
     case .notDetermined:
       guard !hasRequestedLocationAuthorization else { return }
       hasRequestedLocationAuthorization = true
-      DispatchQueue.main.async { [weak self] in
-        self?.locationManager.requestWhenInUseAuthorization()
-      }
+      locationManager.requestWhenInUseAuthorization()
     default:
       locationManager.stopUpdatingLocation()
+      stateQueue.sync {
+        _latestLocation = nil
+      }
     }
   }
 
@@ -2561,6 +2586,12 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     stateQueue.sync {
       _latestLocation = location
     }
+  }
+
+  func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    #if DEBUG
+      print("⚠️ CameraViewController: location update failed: \(error.localizedDescription)")
+    #endif
   }
 
   private func shouldApplyStillNoiseReductionOnSessionQueue() -> Bool {
@@ -3745,17 +3776,20 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
   private func maybeDispatchHistogram(from image: CIImage) {
     let now = CFAbsoluteTimeGetCurrent()
-    let shouldCompute = stateQueue.sync { () -> Bool in
-      guard onHistogramUpdated != nil else { return false }
-      guard previewProcessingMode.shouldComputeHistogram else { return false }
-      guard !histogramIsComputing else { return false }
-      guard (now - histogramLastDispatchTime) >= histogramUpdateInterval else {
-        return false
-      }
+    previewMetricsLock.lock()
+    let shouldCompute: Bool
+    if onHistogramUpdated != nil,
+      previewProcessingMode.shouldComputeHistogram,
+      !histogramIsComputing,
+      (now - histogramLastDispatchTime) >= histogramUpdateInterval
+    {
       histogramIsComputing = true
       histogramLastDispatchTime = now
-      return true
+      shouldCompute = true
+    } else {
+      shouldCompute = false
     }
+    previewMetricsLock.unlock()
 
     guard shouldCompute else { return }
     let histogramImage = image
@@ -3764,10 +3798,10 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       let start = CFAbsoluteTimeGetCurrent()
       let values = self.computeLuminanceHistogram(from: histogramImage)
       let elapsed = CFAbsoluteTimeGetCurrent() - start
-      self.stateQueue.sync {
-        self.recordHistogramProcessingTime(elapsed)
-        self.histogramIsComputing = false
-      }
+      self.previewMetricsLock.lock()
+      self.recordHistogramProcessingTime(elapsed)
+      self.histogramIsComputing = false
+      self.previewMetricsLock.unlock()
       guard let values else { return }
       DispatchQueue.main.async { [weak self] in
         self?.onHistogramUpdated?(values)
@@ -3908,7 +3942,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
       }
     }
     previewLastFrameTimestamp = now
-    _ = updatePreviewProcessingModeOnStateQueue()
+    _ = updatePreviewProcessingMode()
   }
 
   private func applyExposureBias(
@@ -3946,7 +3980,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
         adaptive = max(adaptive, histogramMinInterval * penalty)
       }
     }
-    _ = updatePreviewProcessingModeOnStateQueue()
+    _ = updatePreviewProcessingMode()
     histogramUpdateInterval = min(
       histogramMaxInterval,
       max(histogramMinInterval, adaptive)
@@ -3966,7 +4000,7 @@ final class CameraViewController: NSObject, AVCaptureVideoDataOutputSampleBuffer
     return requestedLensMode
   }
 
-  private func updatePreviewProcessingModeOnStateQueue() -> LumaPreviewProcessingMode {
+  private func updatePreviewProcessingMode() -> LumaPreviewProcessingMode {
     let fps = previewFrameIntervalEMA > 0 ? (1.0 / previewFrameIntervalEMA) : 60.0
     if previewProcessingMode == .reduced, histogramComputeEMA > 0 {
       histogramComputeEMA *= 0.985

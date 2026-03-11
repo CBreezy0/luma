@@ -1,8 +1,8 @@
-import Foundation
-import Photos
 import CoreImage
-import UIKit
+import Foundation
 import ImageIO
+import Photos
+import UIKit
 
 final class NativeRenderer {
   static let shared = NativeRenderer()
@@ -20,27 +20,14 @@ final class NativeRenderer {
     "vignetteFeather",
     "vignette_feather",
     "lens_correction",
-    "chromatic_aberration"
+    "chromatic_aberration",
   ]
 
-  // Force predictable color output (fixes purple/magenta)
-  private let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
-
-  // GPU-backed context + explicit working/output spaces
-  private lazy var ciContext: CIContext = {
-    CIContext(options: [
-      .useSoftwareRenderer: false,
-      .cacheIntermediates: true,
-      .workingColorSpace: sRGB,
-      .outputColorSpace: sRGB
-    ])
-  }()
+  private let ciContext = LumaCIContext.shared
 
   private lazy var mixKernel: CIColorKernel = {
     let src =
-      "kernel vec4 mixKernel(__sample a, __sample b, float t) {" +
-      "  return mix(a, b, t);" +
-      "}"
+      "kernel vec4 mixKernel(__sample a, __sample b, float t) {" + "  return mix(a, b, t);" + "}"
     return CIColorKernel(source: src)!
   }()
 
@@ -81,7 +68,8 @@ final class NativeRenderer {
             cropRect: cropRect
           )
           let t = self.clamp01(presetIntensity)
-          let useImageBlend = (presetBlendMode == "image")
+          let useImageBlend =
+            (presetBlendMode == "image")
             && presetValues != nil
 
           let output: CIImage
@@ -122,7 +110,11 @@ final class NativeRenderer {
 
           let scaled = self.downscale(ciImage: output, maxSide: maxSide)
           guard let jpeg = self.encodeJPEG(ciImage: scaled, quality: quality) else {
-            completion(.failure(NSError(domain: "NativeRenderer", code: -3, userInfo: [NSLocalizedDescriptionKey: "JPEG encode failed"])))
+            completion(
+              .failure(
+                NSError(
+                  domain: "NativeRenderer", code: -3,
+                  userInfo: [NSLocalizedDescriptionKey: "JPEG encode failed"])))
             return
           }
           completion(.success(jpeg))
@@ -156,7 +148,11 @@ final class NativeRenderer {
         )
         let filtered = self.applyAdjustments(input: cropped, values: values)
         guard let jpeg = self.encodeJPEG(ciImage: filtered, quality: quality) else {
-          completion(.failure(NSError(domain: "NativeRenderer", code: -4, userInfo: [NSLocalizedDescriptionKey: "JPEG encode failed"])))
+          completion(
+            .failure(
+              NSError(
+                domain: "NativeRenderer", code: -4,
+                userInfo: [NSLocalizedDescriptionKey: "JPEG encode failed"])))
           return
         }
         do {
@@ -177,12 +173,14 @@ final class NativeRenderer {
       withIntermediateDirectories: true
     )
 
-    let sanitizedAssetId = assetId
+    let sanitizedAssetId =
+      assetId
       .components(separatedBy: CharacterSet.alphanumerics.inverted)
       .filter { !$0.isEmpty }
       .joined(separator: "_")
     let baseName = sanitizedAssetId.isEmpty ? "luma_export" : sanitizedAssetId
-    let fileURL = exportsDirectory
+    let fileURL =
+      exportsDirectory
       .appendingPathComponent("\(baseName)_\(Int(Date().timeIntervalSince1970 * 1000))")
       .appendingPathExtension("jpg")
     try jpegData.write(to: fileURL, options: [.atomic])
@@ -200,7 +198,11 @@ final class NativeRenderer {
     if let assetPath = assetPath {
       renderQueue.async {
         guard let filePath = self.resolveFlutterAssetPath(assetPath) else {
-          completion(.failure(NSError(domain: "NativeRenderer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Asset path not found: \(assetPath)"])))
+          completion(
+            .failure(
+              NSError(
+                domain: "NativeRenderer", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Asset path not found: \(assetPath)"])))
           return
         }
         do {
@@ -208,7 +210,11 @@ final class NativeRenderer {
           let ci: CIImage
           if let maxSide = downsampleMaxSide {
             guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-              completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "Image source decode failed"])))
+              completion(
+                .failure(
+                  NSError(
+                    domain: "NativeRenderer", code: -2,
+                    userInfo: [NSLocalizedDescriptionKey: "Image source decode failed"])))
               return
             }
             let options: [NSString: Any] = [
@@ -217,14 +223,24 @@ final class NativeRenderer {
               kCGImageSourceShouldCacheImmediately: true,
               kCGImageSourceShouldCache: true,
             ]
-            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-              completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "Thumbnail decode failed"])))
+            guard
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+            else {
+              completion(
+                .failure(
+                  NSError(
+                    domain: "NativeRenderer", code: -2,
+                    userInfo: [NSLocalizedDescriptionKey: "Thumbnail decode failed"])))
               return
             }
             ci = CIImage(cgImage: cgImage)
           } else {
             guard let decoded = CIImage(data: data) else {
-              completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "CIImage decode failed (data)"])))
+              completion(
+                .failure(
+                  NSError(
+                    domain: "NativeRenderer", code: -2,
+                    userInfo: [NSLocalizedDescriptionKey: "CIImage decode failed (data)"])))
               return
             }
             ci = decoded
@@ -241,7 +257,11 @@ final class NativeRenderer {
 
     let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
     guard let asset = fetch.firstObject else {
-      completion(.failure(NSError(domain: "NativeRenderer", code: -1, userInfo: [NSLocalizedDescriptionKey: "PHAsset not found for id: \(assetId)"])))
+      completion(
+        .failure(
+          NSError(
+            domain: "NativeRenderer", code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "PHAsset not found for id: \(assetId)"])))
       return
     }
 
@@ -251,17 +271,26 @@ final class NativeRenderer {
     opts.deliveryMode = .highQualityFormat
     opts.version = .current
 
-    PHImageManager.default().requestImageDataAndOrientation(for: asset, options: opts) { data, _, orientation, _ in
+    PHImageManager.default().requestImageDataAndOrientation(for: asset, options: opts) {
+      data, _, orientation, _ in
       self.renderQueue.async {
         guard let data = data else {
-          completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "No image data returned"])))
+          completion(
+            .failure(
+              NSError(
+                domain: "NativeRenderer", code: -2,
+                userInfo: [NSLocalizedDescriptionKey: "No image data returned"])))
           return
         }
 
         var ci: CIImage
         if let maxSide = downsampleMaxSide {
           guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "Image source decode failed"])))
+            completion(
+              .failure(
+                NSError(
+                  domain: "NativeRenderer", code: -2,
+                  userInfo: [NSLocalizedDescriptionKey: "Image source decode failed"])))
             return
           }
           let options: [NSString: Any] = [
@@ -270,14 +299,24 @@ final class NativeRenderer {
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceShouldCache: true,
           ]
-          guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "Thumbnail decode failed"])))
+          guard
+            let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+          else {
+            completion(
+              .failure(
+                NSError(
+                  domain: "NativeRenderer", code: -2,
+                  userInfo: [NSLocalizedDescriptionKey: "Thumbnail decode failed"])))
             return
           }
           ci = CIImage(cgImage: cgImage)
         } else {
           guard let decoded = CIImage(data: data) else {
-            completion(.failure(NSError(domain: "NativeRenderer", code: -2, userInfo: [NSLocalizedDescriptionKey: "CIImage decode failed (data)"])))
+            completion(
+              .failure(
+                NSError(
+                  domain: "NativeRenderer", code: -2,
+                  userInfo: [NSLocalizedDescriptionKey: "CIImage decode failed (data)"])))
             return
           }
           ci = decoded
@@ -301,16 +340,16 @@ final class NativeRenderer {
     // but helps some wide-gamut inputs.
     guard let f = CIFilter(name: "CIColorSpaceConvert") else { return nil }
     f.setValue(image, forKey: kCIInputImageKey)
-    f.setValue(sRGB, forKey: "inputColorSpace")
-    f.setValue(sRGB, forKey: "inputOutputColorSpace")
+    f.setValue(LumaCIContext.workingColorSpace, forKey: "inputColorSpace")
+    f.setValue(LumaCIContext.workingColorSpace, forKey: "inputOutputColorSpace")
     return f.outputImage
   }
 
   private func resolveFlutterAssetPath(_ assetPath: String) -> String? {
     let normalizedPath: String
     if assetPath.hasPrefix("file://"),
-       let url = URL(string: assetPath),
-       url.isFileURL
+      let url = URL(string: assetPath),
+      url.isFileURL
     {
       normalizedPath = url.path
     } else {
@@ -369,9 +408,9 @@ final class NativeRenderer {
 
   private func exifOrientation(for turns: Int) -> Int32 {
     switch turns {
-    case 1: return 6 // 90 CW
-    case 2: return 3 // 180
-    case 3: return 8 // 270 CW
+    case 1: return 6  // 90 CW
+    case 2: return 3  // 180
+    case 3: return 8  // 270 CW
     default: return 1
     }
   }
@@ -426,9 +465,9 @@ final class NativeRenderer {
     var out = input
 
     #if DEBUG
-    for key in values.keys where unsupportedControls.contains(key) {
-      print("⚠️ NativeRenderer: unsupported adjustment ignored: \(key)")
-    }
+      for key in values.keys where unsupportedControls.contains(key) {
+        print("⚠️ NativeRenderer: unsupported adjustment ignored: \(key)")
+      }
     #endif
 
     let sanitizedValues = values.filter { !unsupportedControls.contains($0.key) }
@@ -438,9 +477,11 @@ final class NativeRenderer {
     // exposure: -1..1
     let exposure = v("exposure") * 1.0
     if abs(exposure) > 0.0001 {
-      out = out.applyingFilter("CIExposureAdjust", parameters: [
-        kCIInputEVKey: exposure
-      ])
+      out = out.applyingFilter(
+        "CIExposureAdjust",
+        parameters: [
+          kCIInputEVKey: exposure
+        ])
     }
 
     let contrast = v("contrast")
@@ -453,10 +494,12 @@ final class NativeRenderer {
     if abs(highlights) > 0.0001 || abs(shadows) > 0.0001 {
       let shadowAmt = clamp01(0.5 + shadows * 0.5)
       let highlightAmt = clamp01(0.5 - highlights * 0.5)
-      out = out.applyingFilter("CIHighlightShadowAdjust", parameters: [
-        "inputShadowAmount": shadowAmt,
-        "inputHighlightAmount": highlightAmt
-      ])
+      out = out.applyingFilter(
+        "CIHighlightShadowAdjust",
+        parameters: [
+          "inputShadowAmount": shadowAmt,
+          "inputHighlightAmount": highlightAmt,
+        ])
     }
 
     // tone curve: filmic contrast + black/white control
@@ -470,10 +513,12 @@ final class NativeRenderer {
     if abs(balance) > 0.0001 || abs(tint) > 0.0001 {
       let neutral = CIVector(x: 6500, y: 0)
       let target = CIVector(x: 6500 + CGFloat(balance * 1800), y: CGFloat(tint * 120))
-      out = out.applyingFilter("CITemperatureAndTint", parameters: [
-        "inputNeutral": neutral,
-        "inputTargetNeutral": target
-      ])
+      out = out.applyingFilter(
+        "CITemperatureAndTint",
+        parameters: [
+          "inputNeutral": neutral,
+          "inputTargetNeutral": target,
+        ])
     }
 
     // color controls (keep light; tone curve handles most contrast)
@@ -482,18 +527,22 @@ final class NativeRenderer {
     let brightnessVal = CGFloat(0.0)
 
     if abs(contrast) > 0.0001 || abs(saturation) > 0.0001 {
-      out = out.applyingFilter("CIColorControls", parameters: [
-        kCIInputContrastKey: contrastVal,
-        kCIInputSaturationKey: saturationVal,
-        kCIInputBrightnessKey: brightnessVal
-      ])
+      out = out.applyingFilter(
+        "CIColorControls",
+        parameters: [
+          kCIInputContrastKey: contrastVal,
+          kCIInputSaturationKey: saturationVal,
+          kCIInputBrightnessKey: brightnessVal,
+        ])
     }
 
     // vibrance
     if abs(vibrance) > 0.0001 {
-      out = out.applyingFilter("CIVibrance", parameters: [
-        "inputAmount": CGFloat(vibrance * 0.9)
-      ])
+      out = out.applyingFilter(
+        "CIVibrance",
+        parameters: [
+          "inputAmount": CGFloat(vibrance * 0.9)
+        ])
     }
 
     // noise reduction (before sharpening)
@@ -502,16 +551,20 @@ final class NativeRenderer {
     if noise > 0.0001 || colorNoise > 0.0001 {
       let noiseLevel = CGFloat(0.02 + min(1.0, noise + colorNoise * 0.6) * 0.08)
       let sharpness = CGFloat(0.4 + (1.0 - min(1.0, noise)) * 0.4)
-      out = out.applyingFilter("CINoiseReduction", parameters: [
-        "inputNoiseLevel": noiseLevel,
-        "inputSharpness": sharpness
-      ])
+      out = out.applyingFilter(
+        "CINoiseReduction",
+        parameters: [
+          "inputNoiseLevel": noiseLevel,
+          "inputSharpness": sharpness,
+        ])
 
       if colorNoise > 0.0001 {
         let sat = CGFloat(1.0 - min(0.25, colorNoise * 0.15))
-        out = out.applyingFilter("CIColorControls", parameters: [
-          kCIInputSaturationKey: sat
-        ])
+        out = out.applyingFilter(
+          "CIColorControls",
+          parameters: [
+            kCIInputSaturationKey: sat
+          ])
       }
     }
 
@@ -522,35 +575,43 @@ final class NativeRenderer {
 
     let sharpenAmt = CGFloat(max(0.0, sharpen) * 0.9)
     if sharpenAmt > 0.0001 {
-      out = out.applyingFilter("CISharpenLuminance", parameters: [
-        "inputSharpness": sharpenAmt
-      ])
+      out = out.applyingFilter(
+        "CISharpenLuminance",
+        parameters: [
+          "inputSharpness": sharpenAmt
+        ])
     }
 
     let unsharpAmount = CGFloat(max(0.0, texture) * 0.9 + max(0.0, clarity) * 1.2)
     if unsharpAmount > 0.0001 {
-      out = out.applyingFilter("CIUnsharpMask", parameters: [
-        "inputRadius": 1.8,
-        "inputIntensity": unsharpAmount
-      ])
+      out = out.applyingFilter(
+        "CIUnsharpMask",
+        parameters: [
+          "inputRadius": 1.8,
+          "inputIntensity": unsharpAmount,
+        ])
     }
 
     // dehaze approximation
     let dehaze = v("dehaze")
     if abs(dehaze) > 0.0001 {
-      out = out.applyingFilter("CIColorControls", parameters: [
-        kCIInputContrastKey: CGFloat(1.0 + dehaze * 0.15),
-        kCIInputSaturationKey: CGFloat(1.0 + dehaze * 0.08)
-      ])
+      out = out.applyingFilter(
+        "CIColorControls",
+        parameters: [
+          kCIInputContrastKey: CGFloat(1.0 + dehaze * 0.15),
+          kCIInputSaturationKey: CGFloat(1.0 + dehaze * 0.08),
+        ])
     }
 
     // vignette
     let vignette = v("vignette")
     if vignette > 0.0001 {
-      out = out.applyingFilter("CIVignette", parameters: [
-        "inputIntensity": CGFloat(vignette * 1.2),
-        "inputRadius": 2.0
-      ])
+      out = out.applyingFilter(
+        "CIVignette",
+        parameters: [
+          "inputIntensity": CGFloat(vignette * 1.2),
+          "inputRadius": 2.0,
+        ])
     }
 
     // grain
@@ -558,15 +619,19 @@ final class NativeRenderer {
     if grain > 0.0001 {
       let noise = CIFilter(name: "CIRandomGenerator")!.outputImage!
         .cropped(to: out.extent)
-        .applyingFilter("CIColorMatrix", parameters: [
-          "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-          "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-          "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-          "inputAVector": CIVector(x: 0, y: 0, z: 0, w: CGFloat(grain * 0.12)),
+        .applyingFilter(
+          "CIColorMatrix",
+          parameters: [
+            "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: CGFloat(grain * 0.12)),
+          ])
+      out = noise.applyingFilter(
+        "CISourceOverCompositing",
+        parameters: [
+          kCIInputBackgroundImageKey: out
         ])
-      out = noise.applyingFilter("CISourceOverCompositing", parameters: [
-        kCIInputBackgroundImageKey: out
-      ])
     }
 
     return out
@@ -596,12 +661,14 @@ final class NativeRenderer {
     let extent = ciImage.extent.integral
     guard extent.width > 1, extent.height > 1 else { return nil }
 
-    guard let cg = ciContext.createCGImage(
-      ciImage,
-      from: extent,
-      format: .RGBA8,
-      colorSpace: sRGB
-    ) else { return nil }
+    guard
+      let cg = ciContext.createCGImage(
+        ciImage,
+        from: extent,
+        format: .RGBA8,
+        colorSpace: LumaCIContext.workingColorSpace
+      )
+    else { return nil }
 
     let ui = UIImage(cgImage: cg)
     return ui.jpegData(compressionQuality: CGFloat(clamp01(quality)))
@@ -636,12 +703,14 @@ final class NativeRenderer {
     let p3y = clamp01(0.75 + highlightBend + whiteLift * 0.12 - whitePull * 0.18)
     let p4y = clamp01(1.0 - whitePull * 0.35 + whiteLift * 0.20)
 
-    return image.applyingFilter("CIToneCurve", parameters: [
-      "inputPoint0": CIVector(x: 0.0, y: p0y),
-      "inputPoint1": CIVector(x: 0.25, y: p1y),
-      "inputPoint2": CIVector(x: 0.50, y: p2y),
-      "inputPoint3": CIVector(x: 0.75, y: p3y),
-      "inputPoint4": CIVector(x: 1.0, y: p4y),
-    ])
+    return image.applyingFilter(
+      "CIToneCurve",
+      parameters: [
+        "inputPoint0": CIVector(x: 0.0, y: p0y),
+        "inputPoint1": CIVector(x: 0.25, y: p1y),
+        "inputPoint2": CIVector(x: 0.50, y: p2y),
+        "inputPoint3": CIVector(x: 0.75, y: p3y),
+        "inputPoint4": CIVector(x: 1.0, y: p4y),
+      ])
   }
 }

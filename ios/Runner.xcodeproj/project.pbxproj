@@ -11,16 +11,17 @@
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
+		90F6C7982F085FCD000AB089 /* NativeRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90F6C7972F085FCD000AB089 /* NativeRenderer.swift */; };
+		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
+		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
+		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
 		A11100012F20000100AB1001 /* CameraViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100112F20000100AB1001 /* CameraViewController.swift */; };
 		A11100022F20000100AB1001 /* LumaCameraPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100122F20000100AB1001 /* LumaCameraPlugin.swift */; };
 		A11100032F20000100AB1001 /* LumaFilmSimulation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100132F20000100AB1001 /* LumaFilmSimulation.swift */; };
 		A11100042F20000100AB1001 /* LumaLUTLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100142F20000100AB1001 /* LumaLUTLoader.swift */; };
 		A11100052F20000100AB1001 /* LumaPreviewProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100152F20000100AB1001 /* LumaPreviewProcessor.swift */; };
 		A11100072F20000100AB1001 /* LumaFrameAligner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100172F20000100AB1001 /* LumaFrameAligner.swift */; };
-		90F6C7982F085FCD000AB089 /* NativeRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90F6C7972F085FCD000AB089 /* NativeRenderer.swift */; };
-		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
-		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
-		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
+		A11100082F20000100AB1001 /* LumaCIContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100182F20000100AB1001 /* LumaCIContext.swift */; };
 		AFB8B0A0E005AF293D89AED6 /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 22216260DEF01526251C4CC5 /* Pods_Runner.framework */; };
 		F0A9423703C682F4D2CC15B3 /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B1B44DD71F3D53B32799D240 /* Pods_RunnerTests.framework */; };
 /* End PBXBuildFile section */
@@ -57,12 +58,6 @@
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
 		74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Runner-Bridging-Header.h"; sourceTree = "<group>"; };
 		74858FAE1ED2DC5600515810 /* AppDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		A11100112F20000100AB1001 /* CameraViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraViewController.swift; sourceTree = "<group>"; };
-		A11100122F20000100AB1001 /* LumaCameraPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaCameraPlugin.swift; sourceTree = "<group>"; };
-		A11100132F20000100AB1001 /* LumaFilmSimulation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaFilmSimulation.swift; sourceTree = "<group>"; };
-		A11100142F20000100AB1001 /* LumaLUTLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaLUTLoader.swift; sourceTree = "<group>"; };
-		A11100152F20000100AB1001 /* LumaPreviewProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaPreviewProcessor.swift; sourceTree = "<group>"; };
-		A11100172F20000100AB1001 /* LumaFrameAligner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaFrameAligner.swift; sourceTree = "<group>"; };
 		763782C3D1E9678FF32411F4 /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = Flutter/Release.xcconfig; sourceTree = "<group>"; };
 		90F6C7972F085FCD000AB089 /* NativeRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeRenderer.swift; sourceTree = "<group>"; };
@@ -75,6 +70,13 @@
 		97C147001CF9000F007C117D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		97C147021CF9000F007C117D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		9AD7B86B7AD08C7143373D8E /* Pods-Runner.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"; sourceTree = "<group>"; };
+		A11100112F20000100AB1001 /* CameraViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraViewController.swift; sourceTree = "<group>"; };
+		A11100122F20000100AB1001 /* LumaCameraPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaCameraPlugin.swift; sourceTree = "<group>"; };
+		A11100132F20000100AB1001 /* LumaFilmSimulation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaFilmSimulation.swift; sourceTree = "<group>"; };
+		A11100142F20000100AB1001 /* LumaLUTLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaLUTLoader.swift; sourceTree = "<group>"; };
+		A11100152F20000100AB1001 /* LumaPreviewProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaPreviewProcessor.swift; sourceTree = "<group>"; };
+		A11100172F20000100AB1001 /* LumaFrameAligner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaFrameAligner.swift; sourceTree = "<group>"; };
+		A11100182F20000100AB1001 /* LumaCIContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaCIContext.swift; sourceTree = "<group>"; };
 		A6E7F1F7297BCD769A139A6A /* Pods-RunnerTests.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.profile.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.profile.xcconfig"; sourceTree = "<group>"; };
 		B1B44DD71F3D53B32799D240 /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		BDE0B0B240653886E9D54802 /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
@@ -162,6 +164,7 @@
 				A11100132F20000100AB1001 /* LumaFilmSimulation.swift */,
 				A11100142F20000100AB1001 /* LumaLUTLoader.swift */,
 				A11100152F20000100AB1001 /* LumaPreviewProcessor.swift */,
+				A11100182F20000100AB1001 /* LumaCIContext.swift */,
 				A11100172F20000100AB1001 /* LumaFrameAligner.swift */,
 				90F6C7972F085FCD000AB089 /* NativeRenderer.swift */,
 				97C146FA1CF9000F007C117D /* Main.storyboard */,
@@ -368,6 +371,21 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Runner/Pods-Runner-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
+		9740EEB61CF901F6004384FC /* Run Script */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Run Script";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" build";
+		};
 		A11100062F20000100AB1001 /* Code Sign Embedded Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -384,21 +402,6 @@
 			shellPath = /bin/sh;
 			shellScript = "if [ \"${PLATFORM_NAME}\" != \"iphoneos\" ]; then\n  exit 0\nfi\n\nif [ \"${CODE_SIGNING_ALLOWED}\" = \"NO\" ] || [ \"${CODE_SIGNING_REQUIRED}\" = \"NO\" ] || [ -z \"${EXPANDED_CODE_SIGN_IDENTITY}\" ]; then\n  exit 0\nfi\n\nFRAMEWORKS_DIR=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\nif [ ! -d \"${FRAMEWORKS_DIR}\" ]; then\n  exit 0\nfi\n\nfind \"${FRAMEWORKS_DIR}\" -maxdepth 1 -type d -name \"*.framework\" | while IFS= read -r framework; do\n  echo \"Code signing ${framework}\"\n  /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --preserve-metadata=identifier,entitlements,flags -- \"${framework}\"\ndone\n";
 			showEnvVarsInLog = 0;
-		};
-		9740EEB61CF901F6004384FC /* Run Script */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputPaths = (
-			);
-			name = "Run Script";
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" build";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -418,6 +421,7 @@
 				A11100022F20000100AB1001 /* LumaCameraPlugin.swift in Sources */,
 				A11100042F20000100AB1001 /* LumaLUTLoader.swift in Sources */,
 				A11100052F20000100AB1001 /* LumaPreviewProcessor.swift in Sources */,
+				A11100082F20000100AB1001 /* LumaCIContext.swift in Sources */,
 				A11100072F20000100AB1001 /* LumaFrameAligner.swift in Sources */,
 				A11100012F20000100AB1001 /* CameraViewController.swift in Sources */,
 				A11100032F20000100AB1001 /* LumaFilmSimulation.swift in Sources */,
@@ -487,7 +491,7 @@
 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
@@ -515,9 +519,10 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
 			buildSettings = {
+				APP_SHORTCUTS_ENABLE_FLEXIBLE_MATCHING = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = YMU2335K6D;
@@ -528,18 +533,14 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
-				OTHER_SWIFT_FLAGS = (
-					"$(inherited)",
-					"-Xcc",
-					"-DCI_SILENCE_GL_DEPRECATION",
-				);
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -DCI_SILENCE_GL_DEPRECATION";
 				PRODUCT_BUNDLE_IDENTIFIER = com.cbreezy.luma;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
-				TOOLCHAIN_DIR = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain";
+				TOOLCHAIN_DIR = /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Profile;
@@ -624,7 +625,7 @@
 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -683,7 +684,7 @@
 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
@@ -713,6 +714,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 9740EEB21CF90195004384FC /* Debug.xcconfig */;
 			buildSettings = {
+				APP_SHORTCUTS_ENABLE_FLEXIBLE_MATCHING = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
@@ -726,19 +728,15 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
-				OTHER_SWIFT_FLAGS = (
-					"$(inherited)",
-					"-Xcc",
-					"-DCI_SILENCE_GL_DEPRECATION",
-				);
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -DCI_SILENCE_GL_DEPRECATION";
 				PRODUCT_BUNDLE_IDENTIFIER = com.cbreezy.luma;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
-				TOOLCHAIN_DIR = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain";
+				TOOLCHAIN_DIR = /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
@@ -747,9 +745,10 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
 			buildSettings = {
+				APP_SHORTCUTS_ENABLE_FLEXIBLE_MATCHING = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = YMU2335K6D;
@@ -760,18 +759,14 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
-				OTHER_SWIFT_FLAGS = (
-					"$(inherited)",
-					"-Xcc",
-					"-DCI_SILENCE_GL_DEPRECATION",
-				);
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -DCI_SILENCE_GL_DEPRECATION";
 				PRODUCT_BUNDLE_IDENTIFIER = com.cbreezy.luma;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
-				TOOLCHAIN_DIR = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain";
+				TOOLCHAIN_DIR = /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;
