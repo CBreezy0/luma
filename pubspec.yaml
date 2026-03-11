@@ -1,7 +1,7 @@
 name: luma
 description: "iOS-first camera, library, and editor app built with Flutter and native Swift imaging."
 publish_to: 'none'
-version: 2.0.0+4
+version: 3.0.0+1
 
 environment:
   sdk: ^3.10.3

@@ -6,7 +6,7 @@ Created and maintained by **Chris Bryant**, Luma is intentionally developed in p
 
 ## Current Status
 
-Luma is currently tracked as **Luma v2 Beta**.
+Luma is currently tracked as **v3.0.0 (Build 1) Beta**.
 
 - custom AVFoundation camera implementation with native preview rendering
 - real-time Core Image film simulation pipeline with seven built-in looks
@@ -15,15 +15,16 @@ Luma is currently tracked as **Luma v2 Beta**.
 - internal library with Isar metadata, thumbnail generation, favorites, ratings, and capture metadata
 - native editor rendering bridge for preview, export, and iOS share flows
 
-## Luma v2 Beta Highlights
+## Luma 3.0.0 Beta Highlights
 
-Luma v2 Beta is the current repository baseline for the rebuilt imaging stack.
+Version 3.0.0 (Build 1) is the current repository baseline for the rebuilt imaging stack and the next manual TestFlight-ready repo state.
 
 - rebuilt camera flow around `ios/Runner/CameraViewController.swift`
 - shared film simulation and render pipeline in `ios/Runner/LumaFilmSimulation.swift`
 - preview reliability improvements, histogram throttling, and look-switch synchronization fixes
 - startup hardening for release/TestFlight cold launches on iOS
 - refreshed GitHub workflows so CI stays active while distribution remains manual-only and opt-in
+- improved gallery responsiveness and capture/save reliability for the next beta cycle
 
 ## Startup Reliability Fix
 
@@ -155,10 +156,11 @@ The repository keeps GitHub automation intentionally conservative.
 
 ## Release History
 
+- `v3.0.0 (Build 1)` — Beta milestone with native camera pipeline refinements, film simulation stability updates, gallery performance improvements, startup-fix carry-forward, and improved capture/save reliability
 - `v2.0.0-beta` — rebuilt camera, film simulation, library, and editor pipeline with the iOS startup hang fix
 - `v1.0.1` — editor, gallery, and preview interaction refinements
 - `0.1.0` — first beta milestone
 
-Detailed beta notes live in `RELEASE_NOTES_v2_beta.md`, with additional tester guidance in `docs/BETA_CHECKLIST.md` and `docs/BETA_NOTES.md`.
+Detailed beta notes live in `RELEASE_NOTES_v3_beta.md`, with archived v2 notes in `RELEASE_NOTES_v2_beta.md` and additional tester guidance in `docs/BETA_CHECKLIST.md` and `docs/BETA_NOTES.md`.
 
 If you want to contribute, start with `CONTRIBUTING.md`, use the bug-report template for reproducible issues, and keep all changes free of signing assets, private credentials, and release artifacts.

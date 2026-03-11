@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.0.0 (Build 1 Beta)
+- Prepared the repository and project versioning for Luma Studio 3.0.0 Beta.
+- Set Flutter and iOS version references to marketing version `3.0.0` and build `1`.
+- Carried forward native camera pipeline improvements, film simulation stability work, gallery performance improvements, startup-fix hardening, and capture/save reliability updates for the next beta cycle.
+
 ## v2.0.0-beta
 - Rebuilt the native AVFoundation camera and preview pipeline around the custom iOS camera stack.
 - Added the Core Image film simulation system with real-time look switching and shared render behavior between preview and still capture.
