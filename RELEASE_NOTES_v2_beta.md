@@ -27,6 +27,7 @@ Luma v2 Beta is the current baseline for the rebuilt iOS camera, film simulation
 - Synchronous look-state application so a newly selected film profile stays aligned with capture results.
 - Camera provider timeout handling to keep startup and resume flows from hanging indefinitely.
 - Cleaner GitHub CI and workflow naming with manual-only distribution automation.
+- Clearer public-repo ownership, licensing, and secret-handling guidance for collaborators.
 
 ## Bug Fixes
 

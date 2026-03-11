@@ -2,6 +2,8 @@
 
 Luma is an iOS-first camera, library, and editing app built with Flutter for product UI and native Swift for capture, preview rendering, and high-resolution image processing. The repository focuses on a custom AVFoundation camera stack, a Core Image film simulation pipeline, an internal Isar-backed library, and a non-destructive editor/export flow.
 
+Created and maintained by **Chris Bryant**, Luma is intentionally developed in public and kept safe for open collaboration through documented ownership, manual-only distribution workflows, and conservative secret-handling rules.
+
 ## Current Status
 
 Luma is currently tracked as **Luma v2 Beta**.
@@ -138,6 +140,12 @@ The repository keeps GitHub automation intentionally conservative.
 - TestFlight upload automation is **manual-only**, requires explicit confirmation, and is guarded in both GitHub Actions and Fastlane
 - normal pushes and tags do **not** upload anything to App Store Connect
 
+## Ownership and License
+
+- Project ownership is defined in `.github/CODEOWNERS` and the Git history remains attributable to Chris Bryant.
+- Contribution expectations and safe development rules live in `CONTRIBUTING.md`.
+- Luma is available under the MIT License in `LICENSE`.
+
 ## Known Limitations
 
 - Luma is currently iPhone-only
@@ -152,3 +160,5 @@ The repository keeps GitHub automation intentionally conservative.
 - `0.1.0` — first beta milestone
 
 Detailed beta notes live in `RELEASE_NOTES_v2_beta.md`, with additional tester guidance in `docs/BETA_CHECKLIST.md` and `docs/BETA_NOTES.md`.
+
+If you want to contribute, start with `CONTRIBUTING.md`, use the bug-report template for reproducible issues, and keep all changes free of signing assets, private credentials, and release artifacts.

@@ -8,6 +8,7 @@
 - Added the native editor/export bridge for full-resolution rendering and sharing.
 - Fixed the release-only iOS startup splash hang by moving Isar work off the pre-`runApp()` path and retaining IsarCore symbols in release builds.
 - Cleaned repo automation by removing duplicate CI, making distribution workflows manual-only, and refreshing repo documentation.
+- Added MIT licensing, CODEOWNERS, contribution guidance, and stronger ignore rules for secrets, signing assets, and local build artifacts.
 
 ## v1.0.1 (Beta)
 - Editor: compact adjustment picker with Quick list and “All tools” panel.
